@@ -50,11 +50,15 @@ erDiagram
     text embedding
   }
 
-  ndc_measures {
+  ndc_lts_measures {
     int id PK
     int document_id FK
     string quote
     string parameter
+    string asi
+    string mode
+    string activity_type
+    string geography
     string page
     text embedding
   }
