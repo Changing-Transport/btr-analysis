@@ -25,9 +25,9 @@ erDiagram
   documents {
     int id PK
     string country
-    string source_type
+    string type
+    string version
     string submission_year
-    string file_path
     string doc_url
     string status
   }
@@ -35,7 +35,6 @@ erDiagram
   btr_measures {
     int id PK
     int document_id FK
-    string country
     string measure_name
     text description
     text objectives
@@ -54,12 +53,9 @@ erDiagram
   ndc_measures {
     int id PK
     int document_id FK
-    string country
-    string measure_name
-    text description
-    string taxonomy_class
-    string conditionality
-    string source
+    string quote
+    string parameter
+    string page
     text embedding
   }
 
