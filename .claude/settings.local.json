@@ -11,7 +11,9 @@
       "Bash(.venv/Scripts/python inspect_headers.py)",
       "Bash(python inspect_headers.py)",
       "Bash(python -m pip show openpyxl)",
-      "PowerShell($py = \"C:\\\\Users\\\\becker_nic\\\\OneDrive - Deutsche Gesellschaft für Internationale Zusammenarbeit \\(GIZ\\) GmbH\\\\CODE\\\\BRT-analysis\\\\.venv\\\\Scripts\\\\python.exe\"; & $py \"C:\\\\Users\\\\becker_nic\\\\OneDrive - Deutsche Gesellschaft für Internationale Zusammenarbeit \\(GIZ\\) GmbH\\\\CODE\\\\BRT-analysis\\\\inspect_headers.py\")"
+      "PowerShell($py = \"C:\\\\Users\\\\becker_nic\\\\OneDrive - Deutsche Gesellschaft für Internationale Zusammenarbeit \\(GIZ\\) GmbH\\\\CODE\\\\BRT-analysis\\\\.venv\\\\Scripts\\\\python.exe\"; & $py \"C:\\\\Users\\\\becker_nic\\\\OneDrive - Deutsche Gesellschaft für Internationale Zusammenarbeit \\(GIZ\\) GmbH\\\\CODE\\\\BRT-analysis\\\\inspect_headers.py\")",
+      "PowerShell(Get-Command py -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command conda -ErrorAction SilentlyContinue)"
     ]
   }
 }
