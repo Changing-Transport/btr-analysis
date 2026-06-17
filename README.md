@@ -75,15 +75,15 @@ erDiagram
   }
 
   documents ||--o{ btr_measures : "contains"
-  documents ||--o{ ndc_measures : "contains"
+  documents ||--o{ ndc_lts_measures : "contains"
   btr_measures ||--o{ measure_matches : "matched as"
-  ndc_measures ||--o{ measure_matches : "matched to"
+  ndc_lts_measures ||--o{ measure_matches : "matched to"
 ```
 
 ### Table notes
 * `documents` — shared parent for both measure types. `source_type` is `'BTR'` or `'NDC'` (extensible to `'LTS'`).
 * `btr_measures` — one row per transport measure extracted from a CTF-NDC Table 5. `source_file` is the originating `.xlsx` filename; `source_row` is the 0-based row index within the Table 5 sheet. `embedding` stores a JSON-serialised float list, populated by `embed_and_match.py`.
-* `ndc_measures` — NDC measures imported from the existing Excel export. Same embedding format. `source` is `'excel_export'`.
+* `ndc_lts_measures` — NDC measures imported from the existing Excel export. Same embedding format. `source` is `'excel_export'`.
 * `measure_matches` — output of the semantic matching step. Stores the top-3 candidate NDC matches per BTR measure (`rank` 1–3). `validated` is `NULL` until an analyst reviews the pair, then `'confirmed'` or `'rejected'`.
 
 ## Requirements
