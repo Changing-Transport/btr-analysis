@@ -62,16 +62,37 @@ SCHEMA = [
         embedding           TEXT
     );
     """,
+    # Mirrors the "Mitigation" sheet of the GIZ-SLOCAT Tracker database export.
+    # The per-mode / per-geography 'x' flag columns of the export are condensed
+    # into comma-separated lists (modes, geography).
     """
     CREATE TABLE IF NOT EXISTS ndc_measures (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        country         TEXT,
-        measure_name    TEXT,
-        description     TEXT,
-        taxonomy_class  TEXT,
-        conditionality  TEXT,
-        source          TEXT,
-        embedding       TEXT
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        tracker_document_id     TEXT,
+        country_code            TEXT,
+        country                 TEXT,
+        region                  TEXT,
+        doc_type                TEXT,
+        document_name           TEXT,
+        version                 TEXT,
+        doc_status              TEXT,
+        doc_date                TEXT,
+        category                TEXT,
+        purpose                 TEXT,
+        instrument              TEXT,
+        quote                   TEXT,
+        asi                     TEXT,
+        page                    TEXT,
+        modes                   TEXT,
+        geography               TEXT,
+        activity_type           TEXT,
+        status_of_measure       TEXT,
+        parameter               TEXT,
+        annex                   TEXT,
+        income_group            TEXT,
+        g20                     TEXT,
+        detailed_document_name  TEXT,
+        embedding               TEXT
     );
     """,
     """
@@ -129,6 +150,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
     if existing_cols and "document_id" not in existing_cols:
         conn.execute("DROP TABLE btr_measures")
         print("  (dropped legacy btr_measures table — re-run batch to repopulate)")
+
+    ndc_cols = [r[1] for r in conn.execute("PRAGMA table_info(ndc_measures)")]
+    if ndc_cols and "quote" not in ndc_cols:
+        conn.execute("DROP TABLE ndc_measures")
+        print("  (dropped legacy ndc_measures table — re-run import-ndc to repopulate)")
+
+    mm_cols = [r[1] for r in conn.execute("PRAGMA table_info(measure_matches)")]
+    if mm_cols and "validated_by" not in mm_cols:
+        conn.execute("DROP TABLE measure_matches")
+        print("  (dropped legacy measure_matches table — re-run match to repopulate)")
 
     for stmt in SCHEMA:
         conn.execute(stmt)
