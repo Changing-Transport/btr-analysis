@@ -19,6 +19,13 @@ python pipeline.py batch
 # Reproducible single-document ingestion (e.g. when a new BTR is published)
 python pipeline.py ingest --file downloaded_xlsx/Chile.xlsx [--country Chile] [--doc-type BTR1] [--url ...]
 
+# Import NDC/LTS measures from the GIZ-SLOCAT Tracker database export
+python pipeline.py import-ndc [--file ndc_tracker_database.xlsx]
+
+# Embed measures + semantic matching BTR -> NDC (requires Azure OpenAI credentials in .env)
+python pipeline.py embed
+python pipeline.py match
+
 # LLM confirmation of content-matched measures (requires Azure OpenAI credentials)
 python pipeline.py classify
 
@@ -44,6 +51,25 @@ Each Table 5 row is stored with a `relevance_source`:
 
 * `status_normalized` maps free-text statuses (multilingual) to `planned` / `adopted` / `implemented` / `expired`; the raw value is kept in `status_raw`.
 * `documents.ghg_unit` records the detected GHG reporting unit (`kt CO2 eq` / `Mt CO2 eq`) per document; `ghg_achieved` / `ghg_expected` store raw floats in that unit.
+
+### NDC import
+
+`import-ndc` loads the **Mitigation** sheet of the [GIZ-SLOCAT Tracker database as hosted on TDC](https://portal.transport-data.org/@giz/gizslocat-transport-climate-tracker) into `ndc_measures`: document metadata (type, generation/version, status, date), taxonomy (Category / Purpose / Instrument / Parameter, A-S-I), the quote text with page number, and the per-mode / per-geography `x`-flag columns condensed into comma-separated lists (`modes`, `geography`). Re-running replaces the table content.
+
+### Embedding & semantic matching
+
+`embed` generates one vector per measure via the Azure OpenAI embedding deployment and stores it as a float32 BLOB in the `embedding` column. The embedded text is a `" | "`-joined concatenation of:
+
+| Side | Scope | Columns embedded |
+|---|---|---|
+| `btr_measures` | `review_status` in (`auto`, `confirmed`) | `measure_name` + `description` + `objectives` |
+| `ndc_measures` | all rows (Active and Archived) | `quote` + `purpose` + `instrument` + `category` |
+
+__Rationale__: on the BTR side those three fields carry all the descriptive text. On the NDC side the quote is often very short ("alternative fuels"), so appending the taxonomy labels (purpose, instrument, category) gives the vector enough context to be discriminative.
+
+`match` computes cosine similarity (dot product on unit-norm vectors) between each embedded BTR measure and the NDC/LTS measures of the **same country** — Active documents only by default, or all generations with `--include-archived` — writing the top-3 candidates per BTR measure to `measure_matches` (rank 1–3). Country naming differences between the two sources are reconciled via a small mapping (e.g. Czechia → Czech Republic, Holy See → Vatican); **EU member states fall back to the joint EU NDC** where the Tracker has no national entry. Analyst validations are preserved across `match` re-runs (re-attached by `(btr_id, ndc_id)`).
+
+Note on scores: with an `ada-002`-family deployment, cosine scores compress into roughly 0.7–1.0 — treat them as a ranking signal, not a percentage.
 
 ## Database Schema
 
@@ -90,13 +116,31 @@ erDiagram
 
   ndc_measures {
     int id PK
+    string tracker_document_id
+    string country_code
     string country
-    string measure_name
-    text description
-    string taxonomy_class
-    string conditionality
-    string source
-    text embedding
+    string region
+    string doc_type "NDC | LTS"
+    string document_name
+    string version "e.g. NDC 3.0"
+    string doc_status "Active | Archived"
+    string doc_date
+    string category
+    string purpose
+    string instrument
+    text quote
+    string asi "Avoid | Shift | Improve"
+    string page
+    string modes "condensed x-flags"
+    string geography "condensed x-flags"
+    string activity_type
+    string status_of_measure
+    string parameter
+    string annex
+    string income_group
+    string g20
+    string detailed_document_name
+    blob embedding
   }
 
   measure_matches {
@@ -107,7 +151,7 @@ erDiagram
     int rank
     string validated
     string validated_by
-    string validated_at
+    blob validated_at
   }
 
   documents ||--o{ btr_measures : "contains"
@@ -118,7 +162,8 @@ erDiagram
 * `documents` — one row per ingested source document, unique on (country, doc_type). Ready for BTR2 versioning.
 * `btr_measures` — one row per in-scope measure; `ON DELETE CASCADE` from documents makes single-document re-ingestion clean.
 * `measures_view` — flat view joining measures with document metadata, intended as the read surface for the review UI and analysis notebooks.
-* `ndc_measures` / `measure_matches` — reserved for the deferred NDC import and semantic matching steps.
+* `ndc_measures` — mirror of the Tracker export's Mitigation sheet (see *NDC import* above).
+* `measure_matches` — top-3 NDC candidates per BTR measure; `validated` / `validated_by` / `validated_at` are written by analysts during review.
 
 ## Requirements
 
@@ -129,26 +174,31 @@ playwright + requests   (scraping/download step only)
 openai                  (classify step only)
 ```
 
-Azure OpenAI credentials for `classify`:
+Azure OpenAI credentials for `embed` / `match` / `classify`, read from a local `.env` file (gitignored) or the environment:
 
 ```
 AZURE_OPENAI_ENDPOINT
 AZURE_OPENAI_API_KEY
 AZURE_OPENAI_API_VERSION
-AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
+AZURE_OPENAI_CHAT_DEPLOYMENT_NAME        # classify
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 ```
 
 ## Project Structure
 
 ```
 .
-├── pipeline.py                   # CLI: batch / ingest / classify / stats
+├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / stats
 ├── btr_pipeline/
 │   ├── db.py                     # schema + data access (portable to PostgreSQL)
-│   └── extract.py                # Table 5 parsing, relevance screening, normalisation
+│   ├── extract.py                # Table 5 parsing, relevance screening, normalisation
+│   ├── ndc_import.py             # Tracker Mitigation sheet -> ndc_measures
+│   └── match.py                  # embeddings + semantic matching BTR -> NDC
 ├── brt_transport_analysis.py     # Scrapes UNFCCC and downloads BTR Excel files
 ├── btr_analysis.db               # SQLite database (generated)
+├── ndc_tracker_database.xlsx     # Tracker export from TDC (downloaded)
 ├── downloaded_xlsx/              # Cached BTR Excel files (generated)
+├── .env                          # Azure OpenAI credentials (gitignored)
 │
 │  # Legacy / exploratory scripts (superseded by btr_pipeline):
 ├── survey_headers.py             # Column-name variance survey → header_survey.csv
@@ -158,18 +208,23 @@ AZURE_OPENAI_CHAT_DEPLOYMENT_NAME
 └── README.md
 ```
 
-## Current State (batch of 2026-07)
+## Current State (2026-07)
 
 * 113 cached CTF-NDC files, 112 ingested (Andorra submitted no Table 5)
-* 2,070 measures from 108 countries:
+* 2,070 BTR measures from 108 countries:
   * 1,226 `sector_label` + 5 `sector_specific_file` (auto-accepted)
   * 839 `content_match` (pending review / LLM confirmation)
+* 3,973 NDC/LTS measures imported from the Tracker (183 countries)
+* Embeddings generated for all auto-accepted BTR and Active NDC measures
+* 1,207 BTR measures matched with top-3 NDC candidates (3,584 match rows)
+  * EU-NDC fallback used for: Bulgaria, Croatia, Estonia, Greece, Italy, Poland, Romania
+  * No NDC candidates: Brunei Darussalam, Guyana, Philippines (not in Tracker)
 
 ## Next Steps
 
-1. **LLM confirmation** of the 839 pending content-match measures (`pipeline.py classify`, needs Azure OpenAI credentials).
-2. **Review interface** as a page in the climate-policy-miner Flask app, reading `measures_view` and writing `review_status` / `validated` fields.
-3. **NDC import + semantic matching** once the Tracker measure export is available (`ndc_measures`, `measure_matches`, embeddings).
+1. **Pilot review** of matches for ~5 countries via the analyst review app (standalone Flask app, blueprint-ready for later integration into the climate-policy-miner).
+2. **LLM confirmation** of the 839 pending content-match measures (`pipeline.py classify`).
+3. **Azure hosting**: migrate SQLite → Azure PostgreSQL Flexible Server, deploy the review app next to the climate-policy-miner.
 4. **Taxonomy classification** (A-S-I) reusing `classification_utils.py` from the climate-policy-miner for NDC-comparable categories.
 
 ## Related Resources

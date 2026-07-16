@@ -2,13 +2,15 @@
 BTR extraction pipeline — command-line entry point.
 
 Subcommands:
-    batch     Ingest every .xlsx in the cache directory (one-time batch run).
-              Re-running is idempotent: each document's measures are replaced.
-    ingest    Ingest a single document — the reproducible path for new BTRs:
-                  python pipeline.py ingest --file downloaded_xlsx/Chile.xlsx
-    classify  LLM confirmation of 'pending' content-match measures via
-              Azure OpenAI (requires credentials; see --help).
-    stats     Print database summary.
+    batch       Ingest every .xlsx in the cache directory (one-time batch run).
+                Re-running is idempotent: each document's measures are replaced.
+    ingest      Ingest a single document — the reproducible path for new BTRs:
+                    python pipeline.py ingest --file downloaded_xlsx/Chile.xlsx
+    import-ndc  Import NDC/LTS measures from the GIZ-SLOCAT Tracker database
+                export (Mitigation sheet) into ndc_measures.
+    classify    LLM confirmation of 'pending' content-match measures via
+                Azure OpenAI (requires credentials; see --help).
+    stats       Print database summary.
 
 Environment variables for `classify` (same names as the climate-policy-miner app):
     AZURE_OPENAI_ENDPOINT
@@ -39,6 +41,22 @@ COUNTRY_FILENAME_MAP = {
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def load_env_file(path: str = ".env") -> None:
+    """Minimal .env loader (no python-dotenv dependency). Does not override
+    variables already set in the environment."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8-sig") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 def country_from_filename(fname: str) -> str:
@@ -181,7 +199,57 @@ def cmd_ingest(args) -> None:
     log(f"  non-transport rows skipped: {res['skipped_rows']}")
 
 
+def cmd_import_ndc(args) -> None:
+    if not os.path.exists(args.file):
+        log(f"ERROR: file not found: {args.file}")
+        sys.exit(1)
+
+    from btr_pipeline.ndc_import import import_ndc_measures
+
+    conn = dbmod.connect(args.db)
+    dbmod.init_schema(conn)
+
+    log(f"Importing NDC measures from {args.file} (sheet 'Mitigation')...")
+    try:
+        res = import_ndc_measures(conn, args.file)
+    except ValueError as exc:
+        log(f"ERROR: {exc}")
+        conn.close()
+        sys.exit(1)
+    conn.close()
+
+    log(f"  imported: {res['rows']} measures from {res['countries']} countries")
+    if res["skipped"]:
+        log(f"  skipped (no country/quote): {res['skipped']}")
+
+
+def cmd_embed(args) -> None:
+    load_env_file()
+    from btr_pipeline.match import embed_missing
+
+    conn = dbmod.connect(args.db)
+    dbmod.init_schema(conn)
+    try:
+        embed_missing(conn, log=log)
+    except RuntimeError as exc:
+        log(f"ERROR: {exc}")
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+def cmd_match(args) -> None:
+    load_env_file()
+    from btr_pipeline.match import run_matching
+
+    conn = dbmod.connect(args.db)
+    dbmod.init_schema(conn)
+    run_matching(conn, log=log, include_archived=args.include_archived)
+    conn.close()
+
+
 def cmd_classify(args) -> None:
+    load_env_file()
     required = [
         "AZURE_OPENAI_ENDPOINT",
         "AZURE_OPENAI_API_KEY",
@@ -310,6 +378,20 @@ def main() -> None:
     p_ingest.add_argument("--doc-type", default="BTR1", help="Document type (default BTR1)")
     p_ingest.add_argument("--url", help="UNFCCC document page URL")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_ndc = sub.add_parser("import-ndc", help="Import NDC measures from Tracker export")
+    p_ndc.add_argument("--file", default="ndc_tracker_database.xlsx",
+                       help="Path to the Tracker database xlsx")
+    p_ndc.set_defaults(func=cmd_import_ndc)
+
+    p_embed = sub.add_parser("embed", help="Embed BTR + NDC measures via Azure OpenAI")
+    p_embed.set_defaults(func=cmd_embed)
+
+    p_match = sub.add_parser("match", help="Semantic matching BTR -> NDC (top-3)")
+    p_match.add_argument("--include-archived", action="store_true",
+                         help="Also match against archived NDC generations "
+                              "(default: Active documents only)")
+    p_match.set_defaults(func=cmd_match)
 
     p_classify = sub.add_parser("classify", help="LLM confirmation of pending measures")
     p_classify.add_argument("--limit", type=int, default=500, help="Max measures per run")
