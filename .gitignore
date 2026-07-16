@@ -1,0 +1,30 @@
+# SQLite WAL (Write-Ahead Log) files
+*.db-shm
+*.db-wal
+
+# SQLite binaries
+sqlite3.exe
+sqlite3
+
+# IDE / editor
+.vscode/
+.idea/
+*.pyc
+__pycache__/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+*.egg
+*.wheel
+dist/
+build/
+.venv/
+venv/
+
+# Local env files
+.env
+.env.local
