@@ -17,7 +17,7 @@ The core is the `btr_pipeline` package with a single CLI entry point:
 python pipeline.py batch
 
 # Reproducible single-document ingestion (e.g. when a new BTR is published)
-python pipeline.py ingest --file downloaded_xlsx/Chile.xlsx [--country Chile] [--doc-type BTR1] [--url ...]
+python pipeline.py ingest --file data/downloaded_xlsx/Chile.xlsx [--country Chile] [--doc-type BTR1] [--url ...]
 
 # Import NDC/LTS measures from the GIZ-SLOCAT Tracker database export
 python pipeline.py import-ndc [--file ndc_tracker_database.xlsx]
@@ -28,6 +28,9 @@ python pipeline.py match
 
 # LLM confirmation of content-matched measures (requires Azure OpenAI credentials)
 python pipeline.py classify
+
+# Export all tables to a browsable Excel workbook
+python pipeline.py export [--out btr_analysis_export.xlsx]
 
 # Database summary
 python pipeline.py stats
@@ -67,7 +70,13 @@ Each Table 5 row is stored with a `relevance_source`:
 
 __Rationale__: on the BTR side those three fields carry all the descriptive text. On the NDC side the quote is often very short ("alternative fuels"), so appending the taxonomy labels (purpose, instrument, category) gives the vector enough context to be discriminative.
 
-`match` computes cosine similarity (dot product on unit-norm vectors) between each embedded BTR measure and the NDC/LTS measures of the **same country** — Active documents only by default, or all generations with `--include-archived` — writing the top-3 candidates per BTR measure to `measure_matches` (rank 1–3). Country naming differences between the two sources are reconciled via a small mapping (e.g. Czechia → Czech Republic, Holy See → Vatican); **EU member states fall back to the joint EU NDC** where the Tracker has no national entry. Analyst validations are preserved across `match` re-runs (re-attached by `(btr_id, ndc_id)`).
+`match` computes cosine similarity (dot product on unit-norm vectors) between each embedded BTR measure and the NDC/LTS measures of the **same country**, writing the top-3 candidates per BTR measure to `measure_matches` (rank 1–3). **All NDC generations (Active and Archived) are candidates by default** — BTR measures often date back years and may only appear in earlier climate strategies; use `--active-only` to restrict to Active documents. **EU member states fall back to the joint EU NDC** when the Tracker has no national entry. Analyst validations are preserved across `match` re-runs (re-attached by `(btr_id, ndc_id)`).
+
+**Country naming**: the Tracker database is the naming authority. BTR filenames are translated to Tracker naming at ingestion (`btr_pipeline/countries.py`, e.g. Czechia → Czech Republic, Holy See → Vatican), so `documents.country` always joins directly with `ndc_measures.country`.
+
+### Excel export
+
+`export` writes `btr_analysis_export.xlsx` with one tab per table (Documents, BTR measures, NDC measures, Matches; embedding BLOBs excluded). The **Matches** tab is enriched: each row carries the full text of both sides (BTR name/description/objectives/status vs. NDC quote/purpose/instrument/category, plus document generation and A-S-I), so matches can be compared and validated directly in Excel.
 
 Note on scores: with an `ada-002`-family deployment, cosine scores compress into roughly 0.7–1.0 — treat them as a ranking signal, not a percentage.
 
@@ -188,23 +197,22 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 
 ```
 .
-├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / stats
+├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / export / stats
 ├── btr_pipeline/
 │   ├── db.py                     # schema + data access (portable to PostgreSQL)
 │   ├── extract.py                # Table 5 parsing, relevance screening, normalisation
+│   ├── countries.py              # canonical Tracker country naming
 │   ├── ndc_import.py             # Tracker Mitigation sheet -> ndc_measures
-│   └── match.py                  # embeddings + semantic matching BTR -> NDC
+│   ├── match.py                  # embeddings + semantic matching BTR -> NDC
+│   └── export.py                 # database -> Excel workbook
 ├── brt_transport_analysis.py     # Scrapes UNFCCC and downloads BTR Excel files
-├── btr_analysis.db               # SQLite database (generated)
-├── ndc_tracker_database.xlsx     # Tracker export from TDC (downloaded)
-├── downloaded_xlsx/              # Cached BTR Excel files (generated)
+├── data/
+│   ├── btr_analysis.db           # SQLite database
+│   ├── downloaded_xlsx/          # Cached BTR Excel files
+│   └── btr_transport_results.xlsx  # Screening output (source of document URLs)
+├── ndc_tracker_database.xlsx     # Tracker export from TDC (gitignored, re-downloadable)
+├── btr_analysis_export.xlsx      # Excel export (gitignored, regenerable)
 ├── .env                          # Azure OpenAI credentials (gitignored)
-│
-│  # Legacy / exploratory scripts (superseded by btr_pipeline):
-├── survey_headers.py             # Column-name variance survey → header_survey.csv
-├── extract_btr_measures.py       # First extraction prototype (flat schema)
-├── brt_energy_transport_check.py # First energy-sector keyword screen
-├── inspect_headers.py            # Ad-hoc sheet structure inspection
 └── README.md
 ```
 
@@ -216,9 +224,9 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
   * 839 `content_match` (pending review / LLM confirmation)
 * 3,973 NDC/LTS measures imported from the Tracker (183 countries)
 * Embeddings generated for all auto-accepted BTR and Active NDC measures
-* 1,207 BTR measures matched with top-3 NDC candidates (3,584 match rows)
+* 1,208 BTR measures matched with top-3 NDC candidates across all NDC generations (3,593 match rows)
   * EU-NDC fallback used for: Bulgaria, Croatia, Estonia, Greece, Italy, Poland, Romania
-  * No NDC candidates: Brunei Darussalam, Guyana, Philippines (not in Tracker)
+  * No NDC candidates: Guyana, Philippines (not in Tracker)
 
 ## Next Steps
 

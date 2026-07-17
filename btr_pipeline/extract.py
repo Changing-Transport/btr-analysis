@@ -46,6 +46,7 @@ TRANSPORT_ALL_ROWS_COUNTRIES = {
     "lao_pdr",
     "lao people s democratic republic",
     "lao people's democratic republic",
+    "lao people’s democratic republic",   # Tracker naming (U+2019 apostrophe)
 }
 
 # Content keywords for rows classified under OTHER sectors (mostly energy) that
