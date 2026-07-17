@@ -25,25 +25,8 @@ Matching:
 import os
 import struct
 
-# BTR country name (derived from filenames) -> Tracker country name.
-# Note the U+2019 apostrophe in the Lao entry — it is like that in the Tracker.
-COUNTRY_NAME_MAP = {
-    "Czechia": "Czech Republic",
-    "Côte d Ivoire": "Côte D'Ivoire",
-    "Holy See": "Vatican",
-    "Lao PDR": "Lao People’s Democratic Republic",
-    "Venezuela": "Venezuela, Bolivarian Republic of",
-}
+from .countries import EU_MEMBERS, to_tracker_name
 
-# EU member states (as named in the BTR documents table): if the Tracker has
-# no national measures, fall back to the joint EU NDC.
-EU_MEMBERS = {
-    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czechia",
-    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece",
-    "Hungary", "Ireland", "Italy", "Latvia", "Lithuania", "Luxembourg",
-    "Malta", "Netherlands", "Poland", "Portugal", "Romania", "Slovakia",
-    "Slovenia", "Spain", "Sweden",
-}
 EU_TRACKER_NAME = "European Union"
 
 TOP_K = 3
@@ -158,14 +141,20 @@ def embed_missing(conn, log=print) -> dict:
 # Match step
 # ---------------------------------------------------------------------------
 
-def run_matching(conn, log=print, include_archived: bool = False) -> dict:
+def run_matching(conn, log=print, include_archived: bool = True) -> dict:
     """
     Compute top-K NDC candidates per embedded BTR measure and rewrite
     measure_matches. Existing analyst validations are preserved by re-attaching
     them where the same (btr_id, ndc_id) pair reappears.
 
-    By default only Active NDC/LTS measures are candidates; pass
-    include_archived=True to also match against archived NDC generations.
+    By default ALL NDC/LTS generations are candidates — BTR measures often
+    date back years and may only appear in earlier climate strategies.
+    Pass include_archived=False to restrict candidates to Active documents.
+
+    Fallback chain per BTR document when the primary pool is empty:
+      1. National measures (all generations by default)
+      2. Active European Union measures (EU member states, joint EU NDC)
+      3. Archived national measures (only relevant in Active-only mode)
     """
     # Preserve prior validations before clearing
     prior = {
@@ -177,14 +166,17 @@ def run_matching(conn, log=print, include_archived: bool = False) -> dict:
     }
     conn.execute("DELETE FROM measure_matches")
 
-    # Load NDC vectors grouped by country
-    status_filter = "" if include_archived else "doc_status = 'Active' AND "
-    ndc_by_country: dict[str, list[tuple[int, list[float]]]] = {}
-    for mid, country, blob in conn.execute(
-        f"""SELECT id, country, embedding FROM ndc_measures
-            WHERE {status_filter}embedding IS NOT NULL"""
+    # Load NDC vectors grouped by country. `primary` holds the default
+    # candidate pool; `archived` is the last-resort fallback (empty when
+    # include_archived, since everything lands in primary then).
+    primary: dict[str, list[tuple[int, list[float]]]] = {}
+    archived: dict[str, list[tuple[int, list[float]]]] = {}
+    for mid, country, status, blob in conn.execute(
+        """SELECT id, country, doc_status, embedding FROM ndc_measures
+           WHERE embedding IS NOT NULL"""
     ):
-        ndc_by_country.setdefault(country, []).append((mid, blob_to_vec(blob)))
+        pool = primary if (include_archived or status == "Active") else archived
+        pool.setdefault(country, []).append((mid, blob_to_vec(blob)))
 
     # BTR measures with vectors, joined to their document's country
     btr_rows = conn.execute(
@@ -194,16 +186,24 @@ def run_matching(conn, log=print, include_archived: bool = False) -> dict:
            ORDER BY d.country, m.id"""
     ).fetchall()
 
-    stats = {"matched": 0, "eu_fallback": set(), "no_candidates": set()}
+    stats = {"matched": 0, "eu_fallback": set(),
+             "archived_fallback": set(), "no_candidates": set()}
 
     for btr_id, btr_country, blob in btr_rows:
-        ndc_country = COUNTRY_NAME_MAP.get(btr_country, btr_country)
-        candidates = ndc_by_country.get(ndc_country)
+        # documents.country is stored in Tracker naming since the countries
+        # module was introduced; to_tracker_name also covers older DB states.
+        ndc_country = to_tracker_name(btr_country)
+        candidates = primary.get(ndc_country)
 
-        if not candidates and btr_country in EU_MEMBERS:
-            candidates = ndc_by_country.get(EU_TRACKER_NAME)
+        if not candidates and ndc_country in EU_MEMBERS:
+            candidates = primary.get(EU_TRACKER_NAME)
             if candidates:
                 stats["eu_fallback"].add(btr_country)
+
+        if not candidates:
+            candidates = archived.get(ndc_country)
+            if candidates:
+                stats["archived_fallback"].add(btr_country)
 
         if not candidates:
             stats["no_candidates"].add(btr_country)
@@ -230,6 +230,9 @@ def run_matching(conn, log=print, include_archived: bool = False) -> dict:
     log(f"Matched {stats['matched']} BTR measures (top-{TOP_K} candidates each).")
     if stats["eu_fallback"]:
         log(f"EU-NDC fallback used for: {', '.join(sorted(stats['eu_fallback']))}")
+    if stats["archived_fallback"]:
+        log(f"Archived-NDC fallback (no Active document in Tracker) used for: "
+            f"{', '.join(sorted(stats['archived_fallback']))}")
     if stats["no_candidates"]:
         log(f"No NDC candidates for: {', '.join(sorted(stats['no_candidates']))}")
     return stats

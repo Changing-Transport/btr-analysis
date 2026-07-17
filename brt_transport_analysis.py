@@ -27,8 +27,8 @@ from playwright.sync_api import sync_playwright, Page
 
 BTR_PAGE = "https://unfccc.int/first-biennial-transparency-reports"
 BASE_URL = "https://unfccc.int"
-CACHE_DIR = "downloaded_xlsx"
-OUTPUT_FILE = "btr_transport_results.xlsx"
+CACHE_DIR = os.path.join("data", "downloaded_xlsx")
+OUTPUT_FILE = os.path.join("data", "btr_transport_results.xlsx")
 PAGE_DELAY = 2.0
 DOWNLOAD_DELAY = 1.0
 

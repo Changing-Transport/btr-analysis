@@ -28,3 +28,9 @@ venv/
 # Local env files
 .env
 .env.local
+
+# Source data downloadable from TDC (see README)
+ndc_tracker_database.xlsx
+
+# Generated exports (regenerable via: python pipeline.py export)
+btr_analysis_export.xlsx

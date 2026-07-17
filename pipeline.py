@@ -25,11 +25,12 @@ import re
 import sys
 
 from btr_pipeline import db as dbmod
+from btr_pipeline.countries import to_tracker_name
 from btr_pipeline.extract import extract_measures
 
-DEFAULT_DB = "btr_analysis.db"
-DEFAULT_CACHE = "downloaded_xlsx"
-RESULTS_XLSX = "btr_transport_results.xlsx"
+DEFAULT_DB = os.path.join("data", "btr_analysis.db")
+DEFAULT_CACHE = os.path.join("data", "downloaded_xlsx")
+RESULTS_XLSX = os.path.join("data", "btr_transport_results.xlsx")
 
 # UNFCCC listing name -> cache filename stem (same map as brt_transport_analysis.py)
 COUNTRY_FILENAME_MAP = {
@@ -60,7 +61,9 @@ def load_env_file(path: str = ".env") -> None:
 
 
 def country_from_filename(fname: str) -> str:
-    return os.path.basename(fname).replace(".xlsx", "").replace("_", " ")
+    """Derive the country from a cache filename, in Tracker naming convention."""
+    raw = os.path.basename(fname).replace(".xlsx", "").replace("_", " ")
+    return to_tracker_name(raw)
 
 
 def load_doc_urls(results_path: str) -> dict[str, str]:
@@ -179,7 +182,7 @@ def cmd_ingest(args) -> None:
         log(f"ERROR: file not found: {args.file}")
         sys.exit(1)
 
-    country = args.country or country_from_filename(args.file)
+    country = to_tracker_name(args.country) if args.country else country_from_filename(args.file)
     conn = dbmod.connect(args.db)
     dbmod.init_schema(conn)
 
@@ -244,7 +247,7 @@ def cmd_match(args) -> None:
 
     conn = dbmod.connect(args.db)
     dbmod.init_schema(conn)
-    run_matching(conn, log=log, include_archived=args.include_archived)
+    run_matching(conn, log=log, include_archived=not args.active_only)
     conn.close()
 
 
@@ -337,6 +340,19 @@ def cmd_classify(args) -> None:
         "stays 'pending' until an analyst confirms or rejects.")
 
 
+def cmd_export(args) -> None:
+    if not os.path.exists(args.db):
+        log(f"Database not found: {args.db}")
+        sys.exit(1)
+
+    from btr_pipeline.export import export_excel
+
+    conn = dbmod.connect(args.db)
+    log(f"Exporting {args.db} -> {args.out}")
+    export_excel(conn, args.out, log=log)
+    conn.close()
+
+
 def cmd_stats(args) -> None:
     if not os.path.exists(args.db):
         log(f"Database not found: {args.db}")
@@ -388,14 +404,19 @@ def main() -> None:
     p_embed.set_defaults(func=cmd_embed)
 
     p_match = sub.add_parser("match", help="Semantic matching BTR -> NDC (top-3)")
-    p_match.add_argument("--include-archived", action="store_true",
-                         help="Also match against archived NDC generations "
-                              "(default: Active documents only)")
+    p_match.add_argument("--active-only", action="store_true",
+                         help="Match only against Active NDC documents "
+                              "(default: all generations incl. archived)")
     p_match.set_defaults(func=cmd_match)
 
     p_classify = sub.add_parser("classify", help="LLM confirmation of pending measures")
     p_classify.add_argument("--limit", type=int, default=500, help="Max measures per run")
     p_classify.set_defaults(func=cmd_classify)
+
+    p_export = sub.add_parser("export", help="Export the database to an Excel workbook")
+    p_export.add_argument("--out", default="btr_analysis_export.xlsx",
+                          help="Output xlsx path (default btr_analysis_export.xlsx)")
+    p_export.set_defaults(func=cmd_export)
 
     p_stats = sub.add_parser("stats", help="Print database summary")
     p_stats.set_defaults(func=cmd_stats)
