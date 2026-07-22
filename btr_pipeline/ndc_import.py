@@ -154,6 +154,51 @@ def import_ndc_measures(conn, xlsx_path: str) -> dict:
         inserted += 1
         countries.add(values["country"])
 
+    n_quotes = rebuild_quotes(conn)
     conn.commit()
     wb.close()
-    return {"rows": inserted, "countries": len(countries), "skipped": skipped}
+    return {"rows": inserted, "countries": len(countries),
+            "skipped": skipped, "quotes": n_quotes}
+
+
+def rebuild_quotes(conn) -> int:
+    """
+    Rebuild ndc_quotes (one row per distinct country+quote) from ndc_measures
+    and link the classification rows via quote_id. Existing quote embeddings
+    are preserved across re-imports (keyed on country+quote), so only new or
+    changed quotes need re-embedding.
+    """
+    stash = {
+        (c, q): e
+        for c, q, e in conn.execute(
+            "SELECT country, quote, embedding FROM ndc_quotes "
+            "WHERE embedding IS NOT NULL"
+        )
+    }
+
+    conn.execute("DELETE FROM ndc_quotes")
+    conn.execute(
+        """INSERT INTO ndc_quotes
+               (country, quote, doc_types, versions, doc_statuses, n_classifications)
+           SELECT country, quote,
+                  GROUP_CONCAT(DISTINCT doc_type),
+                  GROUP_CONCAT(DISTINCT version),
+                  GROUP_CONCAT(DISTINCT doc_status),
+                  COUNT(*)
+           FROM ndc_measures
+           WHERE quote IS NOT NULL
+           GROUP BY country, quote"""
+    )
+    conn.execute(
+        """UPDATE ndc_measures SET quote_id =
+               (SELECT q.id FROM ndc_quotes q
+                WHERE q.country = ndc_measures.country
+                  AND q.quote = ndc_measures.quote)"""
+    )
+    for (country, quote), emb in stash.items():
+        conn.execute(
+            "UPDATE ndc_quotes SET embedding = ? WHERE country = ? AND quote = ?",
+            (emb, country, quote),
+        )
+
+    return conn.execute("SELECT COUNT(*) FROM ndc_quotes").fetchone()[0]

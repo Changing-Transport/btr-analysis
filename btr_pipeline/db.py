@@ -7,8 +7,11 @@ by porting a single module. Column types are kept portable: TEXT, INTEGER, REAL.
 Tables:
     documents        — one row per ingested source document (country + doc_type unique)
     btr_measures     — one row per in-scope measure, FK to documents
-    ndc_measures     — reserved for the future NDC import (matching step deferred)
-    measure_matches  — reserved for the future semantic-matching step
+    ndc_quotes       — one row per distinct (country, quote) from the Tracker;
+                       carries the embedding and is the semantic-matching target
+    ndc_measures     — Tracker classification rows (a quote can carry several
+                       taxonomy classifications), FK to ndc_quotes
+    measure_matches  — top-K matches, btr_measures x ndc_quotes
 
 View:
     measures_view    — btr_measures joined with its document metadata, for
@@ -62,6 +65,23 @@ SCHEMA = [
         embedding           TEXT
     );
     """,
+    # One row per distinct quote text per country. The same quote often carries
+    # several taxonomy classifications in the Tracker (rows in ndc_measures) and
+    # can appear in several document generations — doc_types / versions /
+    # doc_statuses aggregate those as comma-separated lists.
+    """
+    CREATE TABLE IF NOT EXISTS ndc_quotes (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        country           TEXT NOT NULL,
+        quote             TEXT NOT NULL,
+        doc_types         TEXT,
+        versions          TEXT,
+        doc_statuses      TEXT,
+        n_classifications INTEGER,
+        embedding         BLOB,
+        UNIQUE (country, quote)
+    );
+    """,
     # Mirrors the "Mitigation" sheet of the GIZ-SLOCAT Tracker database export.
     # The per-mode / per-geography 'x' flag columns of the export are condensed
     # into comma-separated lists (modes, geography).
@@ -92,14 +112,16 @@ SCHEMA = [
         income_group            TEXT,
         g20                     TEXT,
         detailed_document_name  TEXT,
-        embedding               TEXT
+        quote_id                INTEGER REFERENCES ndc_quotes(id)
     );
     """,
+    # ndc_id points at ndc_quotes: matching operates on deduplicated quotes,
+    # not on individual classification rows.
     """
     CREATE TABLE IF NOT EXISTS measure_matches (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         btr_id           INTEGER REFERENCES btr_measures(id),
-        ndc_id           INTEGER REFERENCES ndc_measures(id),
+        ndc_id           INTEGER REFERENCES ndc_quotes(id),
         similarity_score REAL,
         rank             INTEGER,
         validated        TEXT,
@@ -154,12 +176,28 @@ def init_schema(conn: sqlite3.Connection) -> None:
     ndc_cols = [r[1] for r in conn.execute("PRAGMA table_info(ndc_measures)")]
     if ndc_cols and "quote" not in ndc_cols:
         conn.execute("DROP TABLE ndc_measures")
+        ndc_cols = []
         print("  (dropped legacy ndc_measures table — re-run import-ndc to repopulate)")
+    # Migrate pre-ndc_quotes layout: classification rows used to carry the
+    # embedding themselves; now ndc_quotes does.
+    if ndc_cols and "quote_id" not in ndc_cols:
+        conn.execute("ALTER TABLE ndc_measures ADD COLUMN quote_id INTEGER")
+        print("  (added ndc_measures.quote_id — re-run import-ndc to populate)")
+    if ndc_cols and "embedding" in ndc_cols:
+        conn.execute("ALTER TABLE ndc_measures DROP COLUMN embedding")
+        print("  (dropped ndc_measures.embedding — quote embeddings live in ndc_quotes)")
 
     mm_cols = [r[1] for r in conn.execute("PRAGMA table_info(measure_matches)")]
     if mm_cols and "validated_by" not in mm_cols:
         conn.execute("DROP TABLE measure_matches")
+        mm_cols = []
         print("  (dropped legacy measure_matches table — re-run match to repopulate)")
+    # measure_matches used to reference ndc_measures; now it references ndc_quotes
+    if mm_cols:
+        fk_targets = {r[2] for r in conn.execute("PRAGMA foreign_key_list(measure_matches)")}
+        if "ndc_measures" in fk_targets:
+            conn.execute("DROP TABLE measure_matches")
+            print("  (dropped measure_matches with outdated FK — re-run match to repopulate)")
 
     for stmt in SCHEMA:
         conn.execute(stmt)

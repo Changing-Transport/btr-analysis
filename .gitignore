@@ -34,3 +34,7 @@ ndc_tracker_database.xlsx
 
 # Generated exports (regenerable via: python pipeline.py export)
 btr_analysis_export.xlsx
+
+# Generated validation workbooks (regenerable via generate_samples.py);
+# completed/returned copies are shared out-of-band, not committed
+validation_samples/*.xlsx

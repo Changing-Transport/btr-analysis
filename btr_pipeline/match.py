@@ -4,9 +4,11 @@ Embedding and semantic matching between BTR measures and NDC/LTS measures.
 Embedding:
     * BTR side: auto-accepted or confirmed measures (review_status in
       ('auto', 'confirmed')); text = name + description + objectives.
-    * NDC side: ALL measures from the Tracker import (Active and Archived,
-      so NDC-generation progression analysis is possible later);
-      text = quote + purpose + instrument + category.
+    * NDC side: deduplicated quotes (ndc_quotes, one row per distinct
+      country+quote across all generations); text = the bare quote.
+      The same quote can carry several taxonomy classifications in the
+      Tracker — matching on quotes keeps each text exactly once in the
+      candidate list.
     * Vectors come from the Azure OpenAI embedding deployment
       (AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME) and are stored as little-endian
       float32 BLOBs in the `embedding` column (~6 KB per measure — compact
@@ -87,17 +89,12 @@ def btr_text(name, description, objectives) -> str:
     return " | ".join(str(p).strip() for p in parts)[:6000]
 
 
-def ndc_text(quote, purpose, instrument, category) -> str:
-    parts = [p for p in (quote, purpose, instrument, category) if p]
-    return " | ".join(str(p).strip() for p in parts)[:6000]
-
-
 # ---------------------------------------------------------------------------
 # Embed step
 # ---------------------------------------------------------------------------
 
 def embed_missing(conn, log=print) -> dict:
-    """Embed all BTR (auto/confirmed) and Active NDC measures lacking a vector."""
+    """Embed all BTR measures (auto/confirmed) and NDC quotes lacking a vector."""
     client, deployment = get_embedding_client()
 
     btr_rows = conn.execute(
@@ -106,19 +103,19 @@ def embed_missing(conn, log=print) -> dict:
            ORDER BY id"""
     ).fetchall()
     ndc_rows = conn.execute(
-        """SELECT id, quote, purpose, instrument, category FROM ndc_measures
+        """SELECT id, quote FROM ndc_quotes
            WHERE embedding IS NULL
            ORDER BY id"""
     ).fetchall()
 
     jobs = [("btr_measures", r[0], btr_text(r[1], r[2], r[3])) for r in btr_rows]
-    jobs += [("ndc_measures", r[0], ndc_text(r[1], r[2], r[3], r[4])) for r in ndc_rows]
+    jobs += [("ndc_quotes", r[0], str(r[1]).strip()[:6000]) for r in ndc_rows]
 
     if not jobs:
         log("Nothing to embed — all vectors present.")
         return {"embedded": 0}
 
-    log(f"Embedding {len(btr_rows)} BTR + {len(ndc_rows)} NDC measures "
+    log(f"Embedding {len(btr_rows)} BTR measures + {len(ndc_rows)} NDC quotes "
         f"with deployment '{deployment}'...")
 
     done = 0
@@ -166,17 +163,19 @@ def run_matching(conn, log=print, include_archived: bool = True) -> dict:
     }
     conn.execute("DELETE FROM measure_matches")
 
-    # Load NDC vectors grouped by country. `primary` holds the default
+    # Load NDC quote vectors grouped by country. `primary` holds the default
     # candidate pool; `archived` is the last-resort fallback (empty when
-    # include_archived, since everything lands in primary then).
+    # include_archived, since everything lands in primary then). A quote
+    # counts as Active if any of its documents is Active.
     primary: dict[str, list[tuple[int, list[float]]]] = {}
     archived: dict[str, list[tuple[int, list[float]]]] = {}
-    for mid, country, status, blob in conn.execute(
-        """SELECT id, country, doc_status, embedding FROM ndc_measures
+    for qid, country, statuses, blob in conn.execute(
+        """SELECT id, country, doc_statuses, embedding FROM ndc_quotes
            WHERE embedding IS NOT NULL"""
     ):
-        pool = primary if (include_archived or status == "Active") else archived
-        pool.setdefault(country, []).append((mid, blob_to_vec(blob)))
+        is_active = "Active" in (statuses or "")
+        pool = primary if (include_archived or is_active) else archived
+        pool.setdefault(country, []).append((qid, blob_to_vec(blob)))
 
     # BTR measures with vectors, joined to their document's country
     btr_rows = conn.execute(

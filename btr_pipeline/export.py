@@ -15,7 +15,8 @@ MAX_COL_WIDTH = 60
 # Long-text columns get a fixed generous width instead of content-based sizing
 WIDE_COLUMNS = {
     "description", "objectives", "quote", "btr_description", "btr_objectives",
-    "ndc_quote", "measure_name", "btr_measure_name", "purpose", "ndc_purpose",
+    "ndc_quote", "measure_name", "btr_measure_name", "purpose",
+    "ndc_purposes", "ndc_categories", "ndc_instruments",
 }
 
 DOCUMENTS_SQL = """
@@ -36,12 +37,18 @@ BTR_SQL = """
 """
 
 NDC_SQL = """
-    SELECT id, country, country_code, region, doc_type, document_name,
+    SELECT id, quote_id, country, country_code, region, doc_type, document_name,
            version, doc_status, doc_date, category, purpose, instrument,
            quote, asi, page, modes, geography, activity_type,
            status_of_measure, parameter, annex, income_group, g20,
            detailed_document_name, tracker_document_id
     FROM ndc_measures ORDER BY country, id
+"""
+
+NDC_QUOTES_SQL = """
+    SELECT id, country, quote, doc_types, versions, doc_statuses,
+           n_classifications
+    FROM ndc_quotes ORDER BY country, id
 """
 
 MATCHES_SQL = """
@@ -61,28 +68,36 @@ MATCHES_SQL = """
         b.sectors        AS btr_sectors,
         b.start_year     AS btr_start_year,
         b.relevance_source AS btr_relevance_source,
-        n.id             AS ndc_id,
-        n.country        AS ndc_country,
-        n.quote          AS ndc_quote,
-        n.purpose        AS ndc_purpose,
-        n.instrument     AS ndc_instrument,
-        n.category       AS ndc_category,
-        n.asi            AS ndc_asi,
-        n.status_of_measure AS ndc_status_of_measure,
-        n.doc_type       AS ndc_doc_type,
-        n.version        AS ndc_version,
-        n.doc_status     AS ndc_doc_status,
-        n.page           AS ndc_page
+        nq.id            AS ndc_quote_id,
+        nq.country       AS ndc_country,
+        nq.quote         AS ndc_quote,
+        cl.categories    AS ndc_categories,
+        cl.purposes      AS ndc_purposes,
+        cl.instruments   AS ndc_instruments,
+        cl.asi           AS ndc_asi,
+        nq.doc_types     AS ndc_doc_types,
+        nq.versions      AS ndc_versions,
+        nq.doc_statuses  AS ndc_doc_statuses,
+        nq.n_classifications AS ndc_n_classifications
     FROM measure_matches mm
     JOIN btr_measures b ON b.id = mm.btr_id
     JOIN documents d    ON d.id = b.document_id
-    JOIN ndc_measures n ON n.id = mm.ndc_id
+    JOIN ndc_quotes nq  ON nq.id = mm.ndc_id
+    LEFT JOIN (
+        SELECT quote_id,
+               GROUP_CONCAT(DISTINCT category)   AS categories,
+               GROUP_CONCAT(DISTINCT purpose)    AS purposes,
+               GROUP_CONCAT(DISTINCT instrument) AS instruments,
+               GROUP_CONCAT(DISTINCT asi)        AS asi
+        FROM ndc_measures GROUP BY quote_id
+    ) cl ON cl.quote_id = nq.id
     ORDER BY d.country, b.id, mm.rank
 """
 
 SHEETS = [
     ("Documents", DOCUMENTS_SQL),
     ("BTR measures", BTR_SQL),
+    ("NDC quotes", NDC_QUOTES_SQL),
     ("NDC measures", NDC_SQL),
     ("Matches", MATCHES_SQL),
 ]
