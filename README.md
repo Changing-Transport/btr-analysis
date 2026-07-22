@@ -63,20 +63,22 @@ Each Table 5 row is stored with a `relevance_source`:
 
 `embed` generates one vector per measure via the Azure OpenAI embedding deployment and stores it as a float32 BLOB in the `embedding` column. The embedded text is a `" | "`-joined concatenation of:
 
-| Side | Scope | Columns embedded |
+| Side | Scope | Text embedded |
 |---|---|---|
 | `btr_measures` | `review_status` in (`auto`, `confirmed`) | `measure_name` + `description` + `objectives` |
-| `ndc_measures` | all rows (Active and Archived) | `quote` + `purpose` + `instrument` + `category` |
+| `ndc_quotes` | all distinct quotes (Active and Archived) | `quote` only |
+
+The Tracker assigns the same quote several taxonomy classifications (rows in `ndc_measures`), so embedding happens on the **deduplicated quote level**: `ndc_quotes` holds one row per distinct (country, quote) with the document generations aggregated, and each classification row links to its quote via `quote_id`. This guarantees each quote appears at most once in a match candidate list.
 
 __Rationale__: on the BTR side those three fields carry all the descriptive text. On the NDC side the quote is often very short ("alternative fuels"), so appending the taxonomy labels (purpose, instrument, category) gives the vector enough context to be discriminative.
 
-`match` computes cosine similarity (dot product on unit-norm vectors) between each embedded BTR measure and the NDC/LTS measures of the **same country**, writing the top-3 candidates per BTR measure to `measure_matches` (rank 1–3). **All NDC generations (Active and Archived) are candidates by default** — BTR measures often date back years and may only appear in earlier climate strategies; use `--active-only` to restrict to Active documents. **EU member states fall back to the joint EU NDC** when the Tracker has no national entry. Analyst validations are preserved across `match` re-runs (re-attached by `(btr_id, ndc_id)`).
+`match` computes cosine similarity (dot product on unit-norm vectors) between each embedded BTR measure and the deduplicated NDC/LTS quotes of the **same country**, writing the top-3 candidates per BTR measure to `measure_matches` (rank 1–3, `ndc_id` → `ndc_quotes`). **All NDC generations (Active and Archived) are candidates by default** — BTR measures often date back years and may only appear in earlier climate strategies; use `--active-only` to restrict to Active documents. **EU member states fall back to the joint EU NDC** when the Tracker has no national entry. Analyst validations are preserved across `match` re-runs (re-attached by `(btr_id, ndc_id)`).
 
 **Country naming**: the Tracker database is the naming authority. BTR filenames are translated to Tracker naming at ingestion (`btr_pipeline/countries.py`, e.g. Czechia → Czech Republic, Holy See → Vatican), so `documents.country` always joins directly with `ndc_measures.country`.
 
 ### Excel export
 
-`export` writes `btr_analysis_export.xlsx` with one tab per table (Documents, BTR measures, NDC measures, Matches; embedding BLOBs excluded). The **Matches** tab is enriched: each row carries the full text of both sides (BTR name/description/objectives/status vs. NDC quote/purpose/instrument/category, plus document generation and A-S-I), so matches can be compared and validated directly in Excel.
+`export` writes `btr_analysis_export.xlsx` with one tab per table (Documents, BTR measures, NDC quotes, NDC measures, Matches; embedding BLOBs excluded). The **Matches** tab is enriched: each row carries the full text of both sides — BTR name/description/objectives/status vs. the NDC quote with all its taxonomy classifications aggregated (categories, purposes, instruments, A-S-I) and the document generations it appears in — so matches can be compared and validated directly in Excel.
 
 Note on scores: with an `ada-002`-family deployment, cosine scores compress into roughly 0.7–1.0 — treat them as a ranking signal, not a percentage.
 
@@ -123,8 +125,20 @@ erDiagram
     text embedding
   }
 
+  ndc_quotes {
+    int id PK
+    string country
+    text quote
+    string doc_types "aggregated, e.g. NDC, LTS"
+    string versions "aggregated, e.g. NDC 2.0, NDC 3.0"
+    string doc_statuses "aggregated"
+    int n_classifications
+    blob embedding
+  }
+
   ndc_measures {
     int id PK
+    int quote_id FK
     string tracker_document_id
     string country_code
     string country
@@ -149,7 +163,6 @@ erDiagram
     string income_group
     string g20
     string detailed_document_name
-    blob embedding
   }
 
   measure_matches {
@@ -164,15 +177,17 @@ erDiagram
   }
 
   documents ||--o{ btr_measures : "contains"
+  ndc_quotes ||--o{ ndc_measures : "classified by"
   btr_measures ||--o{ measure_matches : "matched as"
-  ndc_measures ||--o{ measure_matches : "matched to"
+  ndc_quotes ||--o{ measure_matches : "matched to"
 ```
 
 * `documents` — one row per ingested source document, unique on (country, doc_type). Ready for BTR2 versioning.
 * `btr_measures` — one row per in-scope measure; `ON DELETE CASCADE` from documents makes single-document re-ingestion clean.
 * `measures_view` — flat view joining measures with document metadata, intended as the read surface for the review UI and analysis notebooks.
-* `ndc_measures` — mirror of the Tracker export's Mitigation sheet (see *NDC import* above).
-* `measure_matches` — top-3 NDC candidates per BTR measure; `validated` / `validated_by` / `validated_at` are written by analysts during review.
+* `ndc_quotes` — deduplicated quote texts (one per country+quote across all generations); embedding carrier and matching target.
+* `ndc_measures` — mirror of the Tracker export's Mitigation sheet: one classification row per taxonomy assignment, linked to its quote via `quote_id`.
+* `measure_matches` — top-3 NDC quote candidates per BTR measure; `validated` / `validated_by` / `validated_at` are written by analysts during review.
 
 ## Requirements
 
@@ -222,9 +237,9 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 * 2,070 BTR measures from 108 countries:
   * 1,226 `sector_label` + 5 `sector_specific_file` (auto-accepted)
   * 839 `content_match` (pending review / LLM confirmation)
-* 3,973 NDC/LTS measures imported from the Tracker (183 countries)
-* Embeddings generated for all auto-accepted BTR and Active NDC measures
-* 1,208 BTR measures matched with top-3 NDC candidates across all NDC generations (3,593 match rows)
+* 3,973 NDC/LTS classification rows imported from the Tracker (183 countries), deduplicated to 3,456 distinct quotes
+* Embeddings generated for all auto-accepted BTR measures and all NDC quotes
+* 1,208 BTR measures matched with top-3 NDC quote candidates across all NDC generations (3,582 match rows)
   * EU-NDC fallback used for: Bulgaria, Croatia, Estonia, Greece, Italy, Poland, Romania
   * No NDC candidates: Guyana, Philippines (not in Tracker)
 
