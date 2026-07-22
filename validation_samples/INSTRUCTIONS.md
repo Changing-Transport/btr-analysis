@@ -36,12 +36,9 @@ your input; everything else is reference.
 
 - Read the BTR measure (**btr_measure** + **btr_description**) against the
   **ndc_quote**.
-- **ai_similarity** is the model's score (higher = more similar wording). It's a
-  hint, not the answer — trust your judgement.
-- The same NDC statement sometimes appears **twice — a short and an extended
-  version**. Both may show up in a block; judge each on its own.
+- **ai_similarity** is the model's score (higher = more similar wording).
 - **ndc_generation** shows which NDC/LTS version the quote comes from. Matches
-  may come from older generations — that's expected and fine.
+  may come from older generations, that's expected and fine.
 
 ## Practical notes
 
