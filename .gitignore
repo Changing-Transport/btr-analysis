@@ -2,6 +2,11 @@
 *.db-shm
 *.db-wal
 
+# Per-user working copy of the database created by run_review_app.py.
+# The tracked snapshot is data/btr_analysis.db; review decisions live here so
+# git operations cannot overwrite them.
+*.local.db
+
 # SQLite binaries
 sqlite3.exe
 sqlite3

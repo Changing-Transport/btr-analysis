@@ -49,6 +49,10 @@ environment and run the last command.
 > The clone is ~160 MB because the database and the cached BTR spreadsheets are
 > included — that is what lets you run it without any pipeline step or API key.
 > `flask` is the only dependency the app itself needs.
+>
+> On first run the app makes its own working copy, `data/btr_analysis.local.db`.
+> Your decisions go there, and git ignores it, so a later `git pull` cannot
+> overwrite your work.
 
 ## A suggested 15-minute walk-through
 
@@ -101,8 +105,10 @@ Screenshots of anything odd are very welcome.
 
 ## Known limitations in this build
 
-- Decisions are stored in **your local copy** of the database, so we cannot pool
-  work across people yet. Reviewing in parallel comes with the hosted version.
+- Decisions are stored in **your own working copy**
+  (`data/btr_analysis.local.db`), so we cannot pool work across people yet.
+  Reviewing in parallel comes with the hosted version. To send your results,
+  share that file — or just tell us what you found.
 - There is no undo history — a changed decision overwrites the previous one
   (though you can always change it back).
 - Guyana and the Philippines have no entries in the Tracker, so their measures

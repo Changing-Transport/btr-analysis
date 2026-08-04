@@ -27,9 +27,13 @@ Open <http://127.0.0.1:5000>, enter your initials, and start with **2 · Matchin
 See [review_app/README.md](review_app/README.md) for what each stage does, and
 [TESTING.md](TESTING.md) for a guided walk-through aimed at reviewers.
 
-> Each clone carries its own copy of `data/btr_analysis.db`, so decisions made
-> locally stay local — fine for trying the app out, not for splitting real review
-> work. Shared review needs the hosted deployment (see *Next Steps*).
+> On first run the app seeds a private working copy,
+> `data/btr_analysis.local.db`, from the tracked snapshot `data/btr_analysis.db`
+> and writes decisions there. The working copy is git-ignored, so pulling or
+> switching branches cannot overwrite review work — but it also means decisions
+> stay on one machine. Shared review needs the hosted deployment (see
+> *Next Steps*). Use `--db data/btr_analysis.db` to work on the tracked snapshot
+> deliberately, e.g. to commit a round of review.
 
 ## Background
 

@@ -11,6 +11,15 @@ python run_review_app.py
 
 Then open <http://127.0.0.1:5000>. Options: `--db`, `--port`, `--host`, `--debug`.
 
+**Which database it writes to.** By default the app works on
+`data/btr_analysis.local.db`, a private working copy seeded once from the
+version-controlled snapshot `data/btr_analysis.db`. The working copy is
+git-ignored, so `git pull`, branch switches and merges cannot overwrite review
+decisions — a hazard that is otherwise easy to hit, because SQLite keeps recent
+writes in a `-wal` sidecar that git knows nothing about. Pass
+`--db data/btr_analysis.db` to work on the tracked snapshot deliberately, and
+stop the app before running git operations against it.
+
 ## Workflow
 
 **Stage 1 — Relevance.** The 839 `content_match` measures are filed under a
