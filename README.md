@@ -195,7 +195,8 @@ erDiagram
 python >= 3.10
 openpyxl
 playwright + requests   (scraping/download step only)
-openai                  (classify step only)
+openai                  (embed / match / classify steps only)
+flask                   (review app only)
 ```
 
 Azure OpenAI credentials for `embed` / `match` / `classify`, read from a local `.env` file (gitignored) or the environment:
@@ -220,6 +221,8 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 │   ├── ndc_import.py             # Tracker Mitigation sheet -> ndc_measures
 │   ├── match.py                  # embeddings + semantic matching BTR -> NDC
 │   └── export.py                 # database -> Excel workbook
+├── review_app/                   # Analyst review app (Flask; see its README)
+├── run_review_app.py             # Local entry point for the review app
 ├── brt_transport_analysis.py     # Scrapes UNFCCC and downloads BTR Excel files
 ├── data/
 │   ├── btr_analysis.db           # SQLite database
@@ -243,9 +246,19 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
   * EU-NDC fallback used for: Bulgaria, Croatia, Estonia, Greece, Italy, Poland, Romania
   * No NDC candidates: Guyana, Philippines (not in Tracker)
 
+## Review app
+
+`review_app/` is a Flask app (blueprint behind a factory) where analysts screen
+relevance and validate matches directly against the database — see
+[review_app/README.md](review_app/README.md).
+
+```bash
+python run_review_app.py     # http://127.0.0.1:5000
+```
+
 ## Next Steps
 
-1. **Pilot review** of matches for ~5 countries via the analyst review app (standalone Flask app, blueprint-ready for later integration into the climate-policy-miner).
+1. **Pilot review** of matches for ~5 countries via the analyst review app, feeding findings back into the UI.
 2. **LLM confirmation** of the 839 pending content-match measures (`pipeline.py classify`).
 3. **Azure hosting**: migrate SQLite → Azure PostgreSQL Flexible Server, deploy the review app next to the climate-policy-miner.
 4. **Taxonomy classification** (A-S-I) reusing `classification_utils.py` from the climate-policy-miner for NDC-comparable categories.

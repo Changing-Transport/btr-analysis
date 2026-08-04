@@ -62,6 +62,12 @@ SCHEMA = [
         review_status       TEXT NOT NULL DEFAULT 'auto',
         llm_relevant        TEXT,
         llm_reasoning       TEXT,
+        reviewed_by         TEXT,
+        reviewed_at         TEXT,
+        review_note         TEXT,
+        match_outcome       TEXT,
+        matched_by          TEXT,
+        matched_at          TEXT,
         embedding           TEXT
     );
     """,
@@ -126,7 +132,9 @@ SCHEMA = [
         rank             INTEGER,
         validated        TEXT,
         validated_by     TEXT,
-        validated_at     TEXT
+        validated_at     TEXT,
+        selected_classification_id INTEGER REFERENCES ndc_measures(id),
+        validation_note  TEXT
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_measures_document ON btr_measures(document_id);",
@@ -202,9 +210,40 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for stmt in SCHEMA:
         conn.execute(stmt)
 
+    _add_missing_columns(conn)
+
     conn.execute("DROP VIEW IF EXISTS measures_view")
     conn.execute(MEASURES_VIEW)
     conn.commit()
+
+
+# Columns added after the initial release. Existing databases are migrated
+# in place with ALTER TABLE so review decisions and embeddings are preserved.
+ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "btr_measures": [
+        ("reviewed_by", "TEXT"),
+        ("reviewed_at", "TEXT"),
+        ("review_note", "TEXT"),
+        ("match_outcome", "TEXT"),
+        ("matched_by", "TEXT"),
+        ("matched_at", "TEXT"),
+    ],
+    "measure_matches": [
+        ("selected_classification_id", "INTEGER"),
+        ("validation_note", "TEXT"),
+    ],
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, columns in ADDED_COLUMNS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue  # table absent; CREATE TABLE above already has the columns
+        for name, coltype in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {coltype}")
+                print(f"  (added {table}.{name})")
 
 
 def file_sha256(path: str) -> str:

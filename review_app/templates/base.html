@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}BTR review{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('review.static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('review.index') }}">BTR&nbsp;↔&nbsp;NDC review</a>
+    <nav>
+      <a href="{{ url_for('review.relevance') }}"
+         class="{% if request.endpoint == 'review.relevance' %}on{% endif %}">1 · Relevance</a>
+      <a href="{{ url_for('review.match') }}"
+         class="{% if request.endpoint == 'review.match' %}on{% endif %}">2 · Matching</a>
+    </nav>
+    <div class="who">
+      {% if analyst %}
+        <span>{{ analyst }}</span>
+        <a class="muted" href="{{ url_for('review.signout') }}">switch</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <main>{% block content %}{% endblock %}</main>
+
+  <footer class="foot">
+    Pilot build · decisions are written straight to the analysis database
+  </footer>
+</body>
+</html>

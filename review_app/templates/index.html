@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}BTR review — overview{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h1>Validation workflow</h1>
+  <p class="lead">Two stages. Stage 1 decides which measures belong in the
+     dataset at all; stage 2 links them to what the country committed to.</p>
+
+  {% if not analyst %}
+  <form class="inline-id" method="post" action="{{ url_for('review.identify') }}">
+    <label>Your name</label>
+    <input class="text" type="text" name="analyst" placeholder="e.g. Nicolas Becker" required>
+    <button class="btn" type="submit">Save</button>
+  </form>
+  {% endif %}
+
+  <div class="stages">
+    <a class="stage" href="{{ url_for('review.relevance') }}">
+      <span class="num">1</span>
+      <h2>Relevance</h2>
+      <p>Measures filed under a non-transport sector (mostly energy) whose text
+         mentions transport. Are they really transport measures?</p>
+      {% set rel_pct = (progress.relevance_done * 100 // progress.relevance_total)
+                        if progress.relevance_total else 0 %}
+      <div class="bar"><i style="width: {{ rel_pct }}%"></i></div>
+      <p class="count">{{ progress.relevance_done }} / {{ progress.relevance_total }} decided</p>
+    </a>
+
+    <a class="stage" href="{{ url_for('review.match') }}">
+      <span class="num">2</span>
+      <h2>Matching</h2>
+      <p>For each BTR measure, judge the suggested NDC quotes and pick the
+         taxonomy reading that applies.</p>
+      {% set m_pct = (progress.match_done * 100 // progress.match_total)
+                      if progress.match_total else 0 %}
+      <div class="bar"><i style="width: {{ m_pct }}%"></i></div>
+      <p class="count">{{ progress.match_done }} / {{ progress.match_total }} measures reviewed</p>
+    </a>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><b>{{ progress.confirmed }}</b><span>confirmed matches</span></div>
+    <div class="tile"><b>{{ progress.btr_only }}</b><span>BTR-only measures</span></div>
+  </div>
+</div>
+
+{% if recent %}
+<div class="card">
+  <h2>Recently reviewed</h2>
+  <table class="rows">
+    <thead><tr><th>Country</th><th>Measure</th><th>Outcome</th><th>By</th><th></th></tr></thead>
+    <tbody>
+    {% for r in recent %}
+      <tr>
+        <td class="nowrap">{{ r["country"] }}</td>
+        <td class="clip">{{ r["measure_name"] }}</td>
+        <td>
+          {% if r["match_outcome"] == "matched" %}
+            <span class="pill ok">{{ r["n_confirmed"] }} match{{ "es" if r["n_confirmed"] != 1 }}</span>
+          {% else %}
+            <span class="pill warn">BTR-only</span>
+          {% endif %}
+        </td>
+        <td class="nowrap muted">{{ r["matched_by"] }}</td>
+        <td>
+          <form method="post" action="{{ url_for('review.match_reopen', measure_id=r['id']) }}">
+            <button class="btn tiny" type="submit">reopen</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

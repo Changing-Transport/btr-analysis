@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Who is reviewing?{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>Who is reviewing?</h1>
+  <p class="lead">Your name is stored with each decision so we can trace and
+     discuss them later. No password needed for the pilot.</p>
+  <form method="post" action="{{ url_for('review.identify') }}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <input class="text" type="text" name="analyst" placeholder="e.g. Nicolas Becker"
+           autofocus required>
+    <button class="btn primary" type="submit">Start reviewing</button>
+  </form>
+</div>
+{% endblock %}
