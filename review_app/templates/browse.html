@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Browse measures{% endblock %}
+{% block content %}
+
+<div class="stagehead">
+  <div>
+    <h1>Browse &amp; edit</h1>
+    <p class="lead">Every extracted measure with its current review state. Open
+       one to change a decision or correct the extracted fields.</p>
+  </div>
+</div>
+
+<form class="filters card" method="get">
+  <input class="text search" type="search" name="q" value="{{ search or '' }}"
+         placeholder="Search name or description…">
+  <select name="country">
+    <option value="">All countries</option>
+    {% for c in all_countries %}
+      <option value="{{ c }}" {% if c == country %}selected{% endif %}>{{ c }}</option>
+    {% endfor %}
+  </select>
+  <select name="state">
+    {% for value, label in states %}
+      <option value="{{ value }}" {% if value == (state or '') %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn" type="submit">Filter</button>
+  <a class="btn" href="{{ url_for('review.browse') }}">Reset</a>
+</form>
+
+<div class="card">
+  <p class="resultline">{{ total }} measure{{ "s" if total != 1 }} found</p>
+
+  <table class="rows">
+    <thead>
+      <tr>
+        <th>Country</th><th>Measure</th><th>Sector</th>
+        <th>Relevance</th><th>Matching</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td class="nowrap">{{ r["country"] }}</td>
+        <td class="clip">
+          {{ r["measure_name"] }}
+          {% if r["edited_by"] %}<span class="pill edit">edited</span>{% endif %}
+        </td>
+        <td class="clip narrowcell muted">{{ r["sectors"] or "—" }}</td>
+        <td>
+          {% if r["relevance_source"] != "content_match" %}
+            <span class="pill muted">auto</span>
+          {% elif r["review_status"] == "confirmed" %}
+            <span class="pill ok">relevant</span>
+          {% elif r["review_status"] == "rejected" %}
+            <span class="pill no">not transport</span>
+          {% else %}
+            <span class="pill warn">pending</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if r["match_outcome"] == "matched" %}
+            <span class="pill ok">{{ r["n_confirmed"] }} match{{ "es" if r["n_confirmed"] != 1 }}</span>
+          {% elif r["match_outcome"] == "btr_only" %}
+            <span class="pill warn">BTR-only</span>
+          {% elif r["n_candidates"] %}
+            <span class="pill">{{ r["n_candidates"] }} to review</span>
+          {% else %}
+            <span class="muted small">no candidates</span>
+          {% endif %}
+        </td>
+        <td class="nowrap">
+          <a class="btn tiny" href="{{ url_for('review.measure_detail', measure_id=r['id'],
+             back=request.full_path) }}">open</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}
+      <a class="btn tiny" href="{{ url_for('review.browse', q=search, country=country,
+         state=state, page=page-1) }}">← previous</a>
+    {% endif %}
+    <span class="muted small">page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}
+      <a class="btn tiny" href="{{ url_for('review.browse', q=search, country=country,
+         state=state, page=page+1) }}">next →</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

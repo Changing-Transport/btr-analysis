@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Relevance screening{% endblock %}
+{% block content %}
+
+<div class="stagehead">
+  <div>
+    <h1>Stage 1 · Relevance</h1>
+    <p class="lead">This measure is filed under a non-transport sector, but its
+       text mentions transport. Does it directly affect transport?</p>
+  </div>
+  {% include "_queue.html" %}
+</div>
+
+{% if not measure %}
+  <div class="card empty">
+    <h2>Nothing left in this queue</h2>
+    <p>{% if country %}No pending measures for {{ country }}.{% else %}All
+       relevance decisions are done.{% endif %}</p>
+    <a class="btn" href="{{ url_for('review.index') }}">Back to overview</a>
+  </div>
+{% else %}
+
+<div class="card">
+  <div class="meta">
+    <span class="pill">{{ measure["country"] }}</span>
+    <span class="pill sector">Filed under: {{ measure["sectors"] or "—" }}</span>
+    {% if measure["status_normalized"] %}
+      <span class="pill">{{ measure["status_normalized"] }}</span>
+    {% endif %}
+    <span class="muted">measure #{{ measure["id"] }}</span>
+  </div>
+
+  <h2 class="measure">{{ measure["measure_name"] }}</h2>
+
+  {% if measure["description"] %}
+    <p class="body">{{ measure["description"] }}</p>
+  {% endif %}
+  {% if measure["objectives"] %}
+    <p class="body"><b>Objectives.</b> {{ measure["objectives"] }}</p>
+  {% endif %}
+
+  <dl class="facts">
+    {% if measure["type_of_instrument"] %}
+      <dt>Instrument</dt><dd>{{ measure["type_of_instrument"] }}</dd>{% endif %}
+    {% if measure["start_year"] %}
+      <dt>Start year</dt><dd>{{ measure["start_year"] }}</dd>{% endif %}
+    {% if measure["implementing_entity"] %}
+      <dt>Implemented by</dt><dd>{{ measure["implementing_entity"] }}</dd>{% endif %}
+    {% if measure["matched_keywords"] %}
+      <dt>Keyword hits</dt><dd class="kw">{{ measure["matched_keywords"] }}</dd>{% endif %}
+  </dl>
+
+  {% if measure["llm_relevant"] %}
+    <div class="ai">
+      <b>AI suggestion: {{ measure["llm_relevant"]|upper }}</b>
+      <span>{{ measure["llm_reasoning"] }}</span>
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('review.relevance_save', measure_id=measure['id']) }}">
+    <input type="hidden" name="country" value="{{ country or '' }}">
+    <input class="text" type="text" name="note" placeholder="Optional note">
+    <div class="actions">
+      <button class="btn danger" name="decision" value="rejected" type="submit">
+        Not transport
+      </button>
+      <button class="btn primary" name="decision" value="confirmed" type="submit">
+        Transport-relevant
+      </button>
+    </div>
+  </form>
+</div>
+
+<p class="progressline">
+  {{ progress.relevance_done }} of {{ progress.relevance_total }} decided
+</p>
+{% endif %}
+
+{% endblock %}

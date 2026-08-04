@@ -1,0 +1,14 @@
+{# Country filter shared by both review stages #}
+<div class="queue">
+  <label>Country</label>
+  <form method="get">
+    <select name="country" onchange="this.form.submit()">
+      <option value="">All countries</option>
+      {% for c in countries %}
+        <option value="{{ c['country'] }}" {% if c['country'] == country %}selected{% endif %}>
+          {{ c["country"] }} ({{ c["open"] }})
+        </option>
+      {% endfor %}
+    </select>
+  </form>
+</div>

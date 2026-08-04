@@ -1,8 +1,35 @@
 # BTR Transport Analysis Pipeline
 
-A Python-based pipeline that extracts transport-relevant climate policy measures from Biennial Transparency Reports (BTRs), stores them in a reviewable database, and is designed to match them against existing NDC measures via semantic similarity (matching step deferred until the NDC import is available).
+A Python-based pipeline that extracts transport-relevant climate policy measures from Biennial Transparency Reports (BTRs), matches them against the NDC commitments in the GIZ-SLOCAT Tracker via semantic similarity, and ships a web app in which analysts validate the results.
 
-Developed as an extension of the [NDC Transport Tracker](https://changing-transport.org/tracker/), a joint initiative by GIZ and the Partnership on Sustainable, Low Carbon Transport (SLOCAT). Designed to be complementary to the [climate-policy-miner](https://transport-policy-miner.greendesert-33ef5f35.germanywestcentral.azurecontainerapps.io/) app: the review interface will be integrated there, and the LLM steps use the same Azure OpenAI environment variables.
+Developed as an extension of the [NDC Transport Tracker](https://changing-transport.org/tracker/), a joint initiative by GIZ and the Partnership on Sustainable, Low Carbon Transport (SLOCAT). Designed to be complementary to the [climate-policy-miner](https://transport-policy-miner.greendesert-33ef5f35.germanywestcentral.azurecontainerapps.io/) app: the review app is a Flask blueprint that can be mounted there, and the LLM steps use the same Azure OpenAI environment variables.
+
+## Try the review app
+
+The repository ships with the populated database, so no pipeline run or API key
+is needed to look at the data.
+
+```bash
+git clone https://github.com/Changing-Transport/btr-analysis.git
+cd btr-analysis
+python -m venv .venv
+```
+
+Activate the environment — `\.venv\Scripts\activate` (Windows PowerShell) or
+`source .venv/bin/activate` (macOS/Linux) — then:
+
+```bash
+pip install flask
+python run_review_app.py
+```
+
+Open <http://127.0.0.1:5000>, enter your initials, and start with **2 · Matching**.
+See [review_app/README.md](review_app/README.md) for what each stage does, and
+[TESTING.md](TESTING.md) for a guided walk-through aimed at reviewers.
+
+> Each clone carries its own copy of `data/btr_analysis.db`, so decisions made
+> locally stay local — fine for trying the app out, not for splitting real review
+> work. Shared review needs the hosted deployment (see *Next Steps*).
 
 ## Background
 
@@ -36,7 +63,7 @@ python pipeline.py export [--out btr_analysis_export.xlsx]
 python pipeline.py stats
 ```
 
-Both `batch` and `ingest` are idempotent: each document's measures are replaced on re-ingestion, keyed on (country, doc_type).
+Both `batch` and `ingest` are idempotent: each document's measures are replaced on re-ingestion, keyed on (country, doc_type). Documents that already carry analyst review decisions are **skipped** rather than overwritten — pass `--force` to replace them deliberately.
 
 ### Relevance screening
 
@@ -91,7 +118,7 @@ erDiagram
   documents {
     int id PK
     string country
-    string doc_type "BTR1 (BTR2-ready)"
+    string doc_type 
     string source_file
     string file_hash
     string doc_url
@@ -125,17 +152,6 @@ erDiagram
     text embedding
   }
 
-  ndc_quotes {
-    int id PK
-    string country
-    text quote
-    string doc_types "aggregated, e.g. NDC, LTS"
-    string versions "aggregated, e.g. NDC 2.0, NDC 3.0"
-    string doc_statuses "aggregated"
-    int n_classifications
-    blob embedding
-  }
-
   ndc_measures {
     int id PK
     int quote_id FK
@@ -143,16 +159,16 @@ erDiagram
     string country_code
     string country
     string region
-    string doc_type "NDC | LTS"
+    string doc_type 
     string document_name
-    string version "e.g. NDC 3.0"
-    string doc_status "Active | Archived"
+    string version 
+    string doc_status 
     string doc_date
     string category
     string purpose
     string instrument
     text quote
-    string asi "Avoid | Shift | Improve"
+    string asi 
     string page
     string modes "condensed x-flags"
     string geography "condensed x-flags"
@@ -163,6 +179,17 @@ erDiagram
     string income_group
     string g20
     string detailed_document_name
+  }
+
+  ndc_quotes {
+    int id PK
+    string country
+    text quote
+    string doc_types "aggregated, e.g. NDC, LTS"
+    string versions "aggregated, e.g. NDC 2.0, NDC 3.0"
+    string doc_statuses "aggregated"
+    int n_classifications
+    blob embedding
   }
 
   measure_matches {
@@ -191,12 +218,21 @@ erDiagram
 
 ## Requirements
 
+Python ≥ 3.10 plus, from [requirements.txt](requirements.txt):
+
+| Package | Needed for |
+|---|---|
+| `openpyxl` | reading BTR/Tracker workbooks, Excel export |
+| `flask` | the review app |
+| `openai` | `embed` / `match` / `classify` |
+| `playwright`, `requests` | UNFCCC scraping (`brt_transport_analysis.py`) |
+
+```bash
+pip install -r requirements.txt     # everything
+pip install flask                   # enough for the review app alone
 ```
-python >= 3.10
-openpyxl
-playwright + requests   (scraping/download step only)
-openai                  (classify step only)
-```
+
+`playwright install chromium` is only required before scraping.
 
 Azure OpenAI credentials for `embed` / `match` / `classify`, read from a local `.env` file (gitignored) or the environment:
 
@@ -220,6 +256,10 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 │   ├── ndc_import.py             # Tracker Mitigation sheet -> ndc_measures
 │   ├── match.py                  # embeddings + semantic matching BTR -> NDC
 │   └── export.py                 # database -> Excel workbook
+├── review_app/                   # Analyst review app (Flask; see its README)
+├── run_review_app.py             # Local entry point for the review app
+├── requirements.txt              # Dependencies
+├── TESTING.md                    # Walk-through for colleagues trying the app
 ├── brt_transport_analysis.py     # Scrapes UNFCCC and downloads BTR Excel files
 ├── data/
 │   ├── btr_analysis.db           # SQLite database
@@ -243,9 +283,21 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
   * EU-NDC fallback used for: Bulgaria, Croatia, Estonia, Greece, Italy, Poland, Romania
   * No NDC candidates: Guyana, Philippines (not in Tracker)
 
+## Review app
+
+`review_app/` is a Flask app (blueprint behind a factory) with three stages —
+relevance screening, match validation, and a browse/edit view for revising any
+earlier decision or correcting extracted fields. See
+[review_app/README.md](review_app/README.md) for the workflow and
+[TESTING.md](TESTING.md) for the reviewer-facing walk-through.
+
+```bash
+python run_review_app.py     # http://127.0.0.1:5000
+```
+
 ## Next Steps
 
-1. **Pilot review** of matches for ~5 countries via the analyst review app (standalone Flask app, blueprint-ready for later integration into the climate-policy-miner).
+1. **Pilot review** of matches for ~5 countries via the analyst review app, feeding findings back into the UI.
 2. **LLM confirmation** of the 839 pending content-match measures (`pipeline.py classify`).
 3. **Azure hosting**: migrate SQLite → Azure PostgreSQL Flexible Server, deploy the review app next to the climate-policy-miner.
 4. **Taxonomy classification** (A-S-I) reusing `classification_utils.py` from the climate-policy-miner for NDC-comparable categories.

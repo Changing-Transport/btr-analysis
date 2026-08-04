@@ -164,41 +164,46 @@ def import_ndc_measures(conn, xlsx_path: str) -> dict:
 def rebuild_quotes(conn) -> int:
     """
     Rebuild ndc_quotes (one row per distinct country+quote) from ndc_measures
-    and link the classification rows via quote_id. Existing quote embeddings
-    are preserved across re-imports (keyed on country+quote), so only new or
-    changed quotes need re-embedding.
-    """
-    stash = {
-        (c, q): e
-        for c, q, e in conn.execute(
-            "SELECT country, quote, embedding FROM ndc_quotes "
-            "WHERE embedding IS NOT NULL"
-        )
-    }
+    and link the classification rows via quote_id.
 
-    conn.execute("DELETE FROM ndc_quotes")
+    Quote rows are upserted rather than recreated, so ids stay stable across
+    re-imports. That matters because measure_matches.ndc_id references them and
+    cascades on delete — recreating the rows would silently discard analyst
+    validations. Embeddings survive for unchanged quotes; only genuinely new
+    quotes come out without one and need `pipeline.py embed`.
+    """
+    # 1. Add quotes that are new since the last import (UNIQUE keeps existing ids)
     conn.execute(
-        """INSERT INTO ndc_quotes
-               (country, quote, doc_types, versions, doc_statuses, n_classifications)
-           SELECT country, quote,
-                  GROUP_CONCAT(DISTINCT doc_type),
-                  GROUP_CONCAT(DISTINCT version),
-                  GROUP_CONCAT(DISTINCT doc_status),
-                  COUNT(*)
-           FROM ndc_measures
-           WHERE quote IS NOT NULL
-           GROUP BY country, quote"""
+        """INSERT OR IGNORE INTO ndc_quotes (country, quote)
+           SELECT DISTINCT country, quote FROM ndc_measures WHERE quote IS NOT NULL"""
     )
+
+    # 2. Refresh the aggregated document metadata on every quote
+    conn.execute(
+        """UPDATE ndc_quotes SET
+               doc_types = (SELECT GROUP_CONCAT(DISTINCT m.doc_type) FROM ndc_measures m
+                            WHERE m.country = ndc_quotes.country AND m.quote = ndc_quotes.quote),
+               versions = (SELECT GROUP_CONCAT(DISTINCT m.version) FROM ndc_measures m
+                           WHERE m.country = ndc_quotes.country AND m.quote = ndc_quotes.quote),
+               doc_statuses = (SELECT GROUP_CONCAT(DISTINCT m.doc_status) FROM ndc_measures m
+                               WHERE m.country = ndc_quotes.country AND m.quote = ndc_quotes.quote),
+               n_classifications = (SELECT COUNT(*) FROM ndc_measures m
+                                    WHERE m.country = ndc_quotes.country AND m.quote = ndc_quotes.quote)"""
+    )
+
+    # 3. Drop quotes that no longer occur in the import (cascades to their matches)
+    conn.execute(
+        """DELETE FROM ndc_quotes WHERE NOT EXISTS (
+               SELECT 1 FROM ndc_measures m
+               WHERE m.country = ndc_quotes.country AND m.quote = ndc_quotes.quote)"""
+    )
+
+    # 4. Link every classification row to its quote
     conn.execute(
         """UPDATE ndc_measures SET quote_id =
                (SELECT q.id FROM ndc_quotes q
                 WHERE q.country = ndc_measures.country
                   AND q.quote = ndc_measures.quote)"""
     )
-    for (country, quote), emb in stash.items():
-        conn.execute(
-            "UPDATE ndc_quotes SET embedding = ? WHERE country = ? AND quote = ?",
-            (emb, country, quote),
-        )
 
     return conn.execute("SELECT COUNT(*) FROM ndc_quotes").fetchone()[0]

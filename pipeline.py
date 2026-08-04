@@ -100,23 +100,36 @@ def ingest_one(
     country: str,
     doc_type: str = "BTR1",
     doc_url: str | None = None,
+    force: bool = False,
 ) -> dict:
-    """Extract one file and write document + measures to the DB."""
+    """
+    Extract one file and write document + measures to the DB.
+
+    If the document already carries analyst review decisions, the result dict
+    has a 'skipped' key explaining why nothing was written (pass force=True to
+    overwrite and discard that review work).
+    """
     res = extract_measures(xlsx_path, country)
     if res["error"]:
         return res
 
-    doc_id = dbmod.upsert_document(
-        conn,
-        country=country,
-        source_file=os.path.basename(xlsx_path),
-        doc_type=doc_type,
-        file_hash=dbmod.file_sha256(xlsx_path),
-        doc_url=doc_url,
-        table5_sheet=res["sheet"],
-        header_row_index=res["header_row_index"],
-        ghg_unit=res["ghg_unit"],
-    )
+    try:
+        doc_id = dbmod.upsert_document(
+            conn,
+            country=country,
+            source_file=os.path.basename(xlsx_path),
+            doc_type=doc_type,
+            file_hash=dbmod.file_sha256(xlsx_path),
+            doc_url=doc_url,
+            table5_sheet=res["sheet"],
+            header_row_index=res["header_row_index"],
+            ghg_unit=res["ghg_unit"],
+            force=force,
+        )
+    except dbmod.ReviewedDocumentError as exc:
+        res["skipped"] = str(exc)
+        return res
+
     dbmod.insert_measures(conn, doc_id, res["measures"])
     conn.commit()
     return res
@@ -144,18 +157,26 @@ def cmd_batch(args) -> None:
 
     totals = {"sector_label": 0, "content_match": 0, "sector_specific_file": 0}
     errors: list[str] = []
+    skipped: list[str] = []
 
     for i, fname in enumerate(files, 1):
         path = os.path.join(args.cache, fname)
         country = country_from_filename(fname)
         stem = fname[:-len(".xlsx")]
 
-        res = ingest_one(conn, path, country, doc_url=doc_urls.get(stem))
+        res = ingest_one(conn, path, country, doc_url=doc_urls.get(stem),
+                         force=args.force)
 
         if res["error"]:
             log(f"  [{i:3d}/{len(files)}] ERR  {fname}")
             log(f"             -> {res['error']}")
             errors.append(f"{fname}: {res['error']}")
+            continue
+
+        if res.get("skipped"):
+            log(f"  [{i:3d}/{len(files)}] SKIP {fname}")
+            log(f"             -> {res['skipped']}")
+            skipped.append(f"{fname}: {res['skipped']}")
             continue
 
         counts: dict[str, int] = {}
@@ -175,6 +196,11 @@ def cmd_batch(args) -> None:
         log(f"\n{len(errors)} file(s) had errors:")
         for e in errors:
             log(f"  {e}")
+    if skipped:
+        log(f"\n{len(skipped)} document(s) skipped to protect analyst review:")
+        for s in skipped:
+            log(f"  {s}")
+        log("  Re-run with --force to overwrite them.")
 
 
 def cmd_ingest(args) -> None:
@@ -187,11 +213,16 @@ def cmd_ingest(args) -> None:
     dbmod.init_schema(conn)
 
     log(f"Ingesting {args.file}  (country: {country}, type: {args.doc_type})")
-    res = ingest_one(conn, args.file, country, doc_type=args.doc_type, doc_url=args.url)
+    res = ingest_one(conn, args.file, country, doc_type=args.doc_type,
+                     doc_url=args.url, force=args.force)
     conn.close()
 
     if res["error"]:
         log(f"ERROR: {res['error']}")
+        sys.exit(1)
+
+    if res.get("skipped"):
+        log(f"SKIPPED: {res['skipped']}")
         sys.exit(1)
 
     by_src: dict[str, int] = {}
@@ -386,6 +417,8 @@ def main() -> None:
 
     p_batch = sub.add_parser("batch", help="Ingest all cached xlsx files")
     p_batch.add_argument("--cache", default=DEFAULT_CACHE, help="Cache directory")
+    p_batch.add_argument("--force", action="store_true",
+                         help="Overwrite documents that carry analyst review work")
     p_batch.set_defaults(func=cmd_batch)
 
     p_ingest = sub.add_parser("ingest", help="Ingest a single xlsx file")
@@ -393,6 +426,8 @@ def main() -> None:
     p_ingest.add_argument("--country", help="Country name (default: from filename)")
     p_ingest.add_argument("--doc-type", default="BTR1", help="Document type (default BTR1)")
     p_ingest.add_argument("--url", help="UNFCCC document page URL")
+    p_ingest.add_argument("--force", action="store_true",
+                          help="Overwrite even if the document carries analyst review work")
     p_ingest.set_defaults(func=cmd_ingest)
 
     p_ndc = sub.add_parser("import-ndc", help="Import NDC measures from Tracker export")

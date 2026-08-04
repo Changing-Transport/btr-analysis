@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Match validation{% endblock %}
+{% block content %}
+
+<div class="stagehead">
+  <div>
+    <h1>Stage 2 · Matching</h1>
+    <p class="lead">Does any of these NDC commitments describe the same thing as
+       the BTR measure? Confirm as many as genuinely apply.</p>
+  </div>
+  {% include "_queue.html" %}
+</div>
+
+{% if not measure %}
+  <div class="card empty">
+    <h2>Nothing left in this queue</h2>
+    <p>{% if country %}No measures awaiting match review for {{ country }}.
+       {% else %}All measures with candidates have been reviewed.{% endif %}</p>
+    <a class="btn" href="{{ url_for('review.index') }}">Back to overview</a>
+  </div>
+{% else %}
+
+<form method="post" action="{{ url_for('review.match_save', measure_id=measure['id']) }}">
+<input type="hidden" name="country" value="{{ country or '' }}">
+
+<div class="split">
+  <aside class="card btrside">
+    <div class="meta">
+      <span class="pill">{{ measure["country"] }}</span>
+      {% if measure["status_normalized"] %}
+        <span class="pill">{{ measure["status_normalized"] }}</span>{% endif %}
+      <span class="muted">#{{ measure["id"] }}</span>
+    </div>
+    <h2 class="measure">{{ measure["measure_name"] }}</h2>
+    {% if measure["description"] %}<p class="body">{{ measure["description"] }}</p>{% endif %}
+    {% if measure["objectives"] %}
+      <p class="body"><b>Objectives.</b> {{ measure["objectives"] }}</p>{% endif %}
+    <dl class="facts">
+      <dt>Sector</dt><dd>{{ measure["sectors"] or "—" }}</dd>
+      {% if measure["start_year"] %}<dt>Start</dt><dd>{{ measure["start_year"] }}</dd>{% endif %}
+      {% if measure["ghg_expected"] %}
+        <dt>Expected</dt><dd>{{ measure["ghg_expected"] }} {{ measure["ghg_unit"] or "" }}</dd>
+      {% endif %}
+      {% if measure["implementing_entity"] %}
+        <dt>Entity</dt><dd>{{ measure["implementing_entity"] }}</dd>{% endif %}
+    </dl>
+  </aside>
+
+  <section class="cands">
+    {% for c in candidates %}
+      {% set row = c.row %}
+      <div class="cand" data-match="{{ row['match_id'] }}">
+        <div class="candhead">
+          <span class="rank">#{{ row["rank"] }}</span>
+          <span class="score" title="AI text-similarity — a hint, not a verdict">
+            similarity {{ "%.3f"|format(row["similarity_score"]) }}</span>
+          {% if row["quote_country"] != measure["country"] %}
+            <span class="pill warn">from {{ row["quote_country"] }} NDC</span>
+          {% endif %}
+          <span class="pill muted">{{ row["versions"] or row["doc_types"] }}</span>
+        </div>
+
+        <blockquote>{{ row["quote"] }}</blockquote>
+
+        {% set cls = c.classifications %}
+        {% if cls|length == 1 %}
+          {% set only = cls[0] %}
+          <input type="hidden" name="classification-{{ row['match_id'] }}" value="{{ only['id'] }}">
+          <p class="tax">
+            <span class="tag asi">{{ only["asi"] or "—" }}</span>
+            <span class="tag">{{ only["category"] or "—" }}</span>
+            <span class="tag">{{ only["purpose"] or "—" }}</span>
+          </p>
+        {% elif cls|length > 1 %}
+          <div class="taxpick">
+            <p class="taxlabel">This quote is classified {{ cls|length }} ways in the
+               Tracker — pick the one matching the BTR measure:</p>
+            {% for cl in cls %}
+              <label class="taxopt">
+                <input type="radio" name="classification-{{ row['match_id'] }}"
+                       value="{{ cl['id'] }}" {% if loop.first %}checked{% endif %}>
+                <span>
+                  <span class="tag asi">{{ cl["asi"] or "—" }}</span>
+                  <span class="tag">{{ cl["category"] or "—" }}</span>
+                  <span class="tag">{{ cl["purpose"] or "—" }}</span>
+                </span>
+              </label>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="verdict">
+          <label class="opt yes">
+            <input type="radio" name="verdict-{{ row['match_id'] }}" value="confirmed">
+            <span>Match</span>
+          </label>
+          <label class="opt no">
+            <input type="radio" name="verdict-{{ row['match_id'] }}" value="rejected" checked>
+            <span>No match</span>
+          </label>
+          <input class="text note" type="text" name="note-{{ row['match_id'] }}"
+                 placeholder="Optional note">
+        </div>
+      </div>
+    {% endfor %}
+
+    <div class="submitbar">
+      <p class="hint">Leaving everything on “No match” records this as a
+         <b>BTR-only</b> measure — implemented, but not committed to in the NDC.</p>
+      <button class="btn primary" type="submit">Save &amp; next measure</button>
+    </div>
+  </section>
+</div>
+</form>
+
+<p class="progressline">
+  {{ progress.match_done }} of {{ progress.match_total }} measures reviewed
+</p>
+{% endif %}
+
+{% endblock %}

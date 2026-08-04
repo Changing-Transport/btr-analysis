@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}Measure #{{ measure["id"] }}{% endblock %}
+{% block content %}
+
+<div class="crumb">
+  <a href="{{ back or url_for('review.browse') }}">← back to list</a>
+</div>
+
+<div class="card">
+  <div class="meta">
+    <span class="pill">{{ measure["country"] }}</span>
+    <span class="pill sector">{{ measure["sectors"] or "—" }}</span>
+    <span class="pill muted">{{ measure["relevance_source"] }}</span>
+    <span class="muted">measure #{{ measure["id"] }} · row {{ measure["source_row"] }}
+      of {{ measure["source_file"] }}</span>
+  </div>
+  <h1 class="measure">{{ measure["measure_name"] }}</h1>
+  {% if measure["edited_by"] %}
+    <p class="editedby">Manually edited by {{ measure["edited_by"] }}
+       on {{ measure["edited_at"] }}</p>
+  {% endif %}
+</div>
+
+{# ---------------- Stage 1: relevance ---------------- #}
+{% if measure["relevance_source"] == "content_match" %}
+<div class="card">
+  <h2>Relevance decision</h2>
+  <p class="lead">Filed under a non-transport sector; kept because its text
+     mentions transport{% if measure["matched_keywords"] %}
+     (<span class="kw">{{ measure["matched_keywords"] }}</span>){% endif %}.</p>
+
+  <p class="statusline">
+    Current:
+    {% if measure["review_status"] == "confirmed" %}
+      <span class="pill ok">transport-relevant</span>
+    {% elif measure["review_status"] == "rejected" %}
+      <span class="pill no">not transport</span>
+    {% else %}
+      <span class="pill warn">pending</span>
+    {% endif %}
+    {% if measure["reviewed_by"] %}
+      <span class="muted small">by {{ measure["reviewed_by"] }} on {{ measure["reviewed_at"] }}</span>
+    {% endif %}
+    {% if measure["review_note"] %}
+      <span class="muted small">· “{{ measure["review_note"] }}”</span>
+    {% endif %}
+  </p>
+
+  <form method="post" action="{{ url_for('review.measure_relevance', measure_id=measure['id']) }}">
+    <input class="text" type="text" name="note" placeholder="Optional note"
+           value="{{ measure['review_note'] or '' }}">
+    <div class="actions">
+      {% if measure["review_status"] != "pending" %}
+        <button class="btn" name="decision" value="reset" type="submit">Reset to pending</button>
+      {% endif %}
+      <button class="btn danger" name="decision" value="rejected" type="submit">Not transport</button>
+      <button class="btn primary" name="decision" value="confirmed" type="submit">Transport-relevant</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{# ---------------- Stage 2: matches ---------------- #}
+<div class="card">
+  <h2>Match decisions</h2>
+
+  {% if not candidates %}
+    <p class="lead">No NDC candidates for this measure
+      {% if measure["review_status"] == "pending" %}
+        — confirm its relevance first, then run
+        <code>pipeline.py embed &amp;&amp; pipeline.py match</code>.
+      {% else %}
+        (the Tracker may have no entry for {{ measure["country"] }}).
+      {% endif %}
+    </p>
+  {% else %}
+    <p class="statusline">
+      Current:
+      {% if measure["match_outcome"] == "matched" %}
+        <span class="pill ok">matched</span>
+      {% elif measure["match_outcome"] == "btr_only" %}
+        <span class="pill warn">BTR-only</span>
+      {% else %}
+        <span class="pill">not yet reviewed</span>
+      {% endif %}
+      {% if measure["matched_by"] %}
+        <span class="muted small">by {{ measure["matched_by"] }} on {{ measure["matched_at"] }}</span>
+      {% endif %}
+    </p>
+
+    <form method="post" action="{{ url_for('review.measure_match', measure_id=measure['id']) }}">
+      <div class="cands compact">
+        {% for c in candidates %}
+          {% set row = c.row %}
+          <div class="cand">
+            <div class="candhead">
+              <span class="rank">#{{ row["rank"] }}</span>
+              <span class="score">similarity {{ "%.3f"|format(row["similarity_score"]) }}</span>
+              <span class="pill muted">{{ row["versions"] or row["doc_types"] }}</span>
+            </div>
+            <blockquote>{{ row["quote"] }}</blockquote>
+
+            {% set cls = c.classifications %}
+            {% if cls|length == 1 %}
+              <input type="hidden" name="classification-{{ row['match_id'] }}" value="{{ cls[0]['id'] }}">
+              <p class="tax">
+                <span class="tag asi">{{ cls[0]["asi"] or "—" }}</span>
+                <span class="tag">{{ cls[0]["category"] or "—" }}</span>
+                <span class="tag">{{ cls[0]["purpose"] or "—" }}</span>
+              </p>
+            {% elif cls|length > 1 %}
+              <div class="taxpick">
+                <p class="taxlabel">Classified {{ cls|length }} ways — pick the applicable reading:</p>
+                {% for cl in cls %}
+                  <label class="taxopt">
+                    <input type="radio" name="classification-{{ row['match_id'] }}" value="{{ cl['id'] }}"
+                      {% if cl['id'] == row['selected_classification_id']
+                         or (not row['selected_classification_id'] and loop.first) %}checked{% endif %}>
+                    <span>
+                      <span class="tag asi">{{ cl["asi"] or "—" }}</span>
+                      <span class="tag">{{ cl["category"] or "—" }}</span>
+                      <span class="tag">{{ cl["purpose"] or "—" }}</span>
+                    </span>
+                  </label>
+                {% endfor %}
+              </div>
+            {% endif %}
+
+            <div class="verdict">
+              <label class="opt yes">
+                <input type="radio" name="verdict-{{ row['match_id'] }}" value="confirmed"
+                       {% if row["validated"] == "confirmed" %}checked{% endif %}>
+                <span>Match</span>
+              </label>
+              <label class="opt no">
+                <input type="radio" name="verdict-{{ row['match_id'] }}" value="rejected"
+                       {% if row["validated"] != "confirmed" %}checked{% endif %}>
+                <span>No match</span>
+              </label>
+              <input class="text note" type="text" name="note-{{ row['match_id'] }}"
+                     placeholder="Optional note" value="{{ row['validation_note'] or '' }}">
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="actions">
+        <button class="btn primary" type="submit">Save match decisions</button>
+      </div>
+    </form>
+
+    {% if measure["match_outcome"] %}
+      <form method="post" action="{{ url_for('review.match_reopen', measure_id=measure['id']) }}">
+        <input type="hidden" name="back" value="{{ url_for('review.measure_detail', measure_id=measure['id']) }}">
+        <div class="actions">
+          <button class="btn" type="submit">Clear all match decisions</button>
+        </div>
+      </form>
+    {% endif %}
+  {% endif %}
+</div>
+
+{# ---------------- Extracted fields ---------------- #}
+<div class="card">
+  <h2>Extracted fields</h2>
+  <p class="lead">Correct anything the extractor got wrong. Edits are recorded
+     against your name; re-ingesting this document would replace them.</p>
+
+  <form method="post" action="{{ url_for('review.measure_fields', measure_id=measure['id']) }}">
+    <div class="fields">
+      {% for field, label in editable %}
+        <label class="field">
+          <span>{{ label }}</span>
+          {% if field in ("description", "objectives") %}
+            <textarea name="{{ field }}" rows="4">{{ measure[field] or "" }}</textarea>
+          {% elif field == "status_normalized" %}
+            <select name="{{ field }}">
+              {% for opt in status_options %}
+                <option value="{{ opt }}" {% if opt == (measure[field] or "") %}selected{% endif %}>
+                  {{ opt or "—" }}</option>
+              {% endfor %}
+            </select>
+          {% else %}
+            <input class="text" type="text" name="{{ field }}"
+                   value="{{ measure[field] if measure[field] is not none else '' }}">
+          {% endif %}
+        </label>
+      {% endfor %}
+    </div>
+    <div class="actions">
+      <button class="btn primary" type="submit">Save field changes</button>
+    </div>
+  </form>
+</div>
+
+{% endblock %}
