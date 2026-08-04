@@ -64,9 +64,7 @@
         </td>
         <td class="nowrap muted">{{ r["matched_by"] }}</td>
         <td>
-          <form method="post" action="{{ url_for('review.match_reopen', measure_id=r['id']) }}">
-            <button class="btn tiny" type="submit">reopen</button>
-          </form>
+          <a class="btn tiny" href="{{ url_for('review.measure_detail', measure_id=r['id']) }}">open</a>
         </td>
       </tr>
     {% endfor %}

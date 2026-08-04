@@ -38,8 +38,39 @@ Writes `measure_matches.validated` / `validated_by` / `validated_at` /
 `selected_classification_id` / `validation_note`, and
 `btr_measures.match_outcome` = `matched` / `btr_only`.
 
-Both stages have a country filter, and the overview page lists recent decisions
-with a **reopen** button that returns a measure to the queue.
+Both stages have a country filter, and the overview page lists recent decisions.
+
+**Stage 3 — Browse & edit.** The *Browse* tab lists every extracted measure with
+its state in both stages, filterable by country, workflow state (relevance
+pending/decided, matching pending/matched/BTR-only, manually edited) and a
+free-text search over name and description. Opening a measure gives a detail
+page where anything can be revised:
+
+- **Change or reset the relevance decision** (back to pending).
+- **Re-decide the match verdicts** — the form is pre-filled with the current
+  verdicts, classification choice and notes, so corrections are a single edit.
+  *Clear all match decisions* returns the measure to the stage-2 queue.
+- **Correct extracted fields** — name, description, objectives, instrument,
+  status (raw and normalised), sectors, gases, start year, entity and the GHG
+  figures. Edits are stamped with `edited_by` / `edited_at` and the measure is
+  badged *edited* in the browse list.
+
+## Re-ingestion safety
+
+Re-running `pipeline.py batch` or `ingest` replaces a document's measures, which
+would discard the review decisions attached to them. Documents carrying review
+work are therefore **skipped** with an explanatory message; pass `--force` to
+overwrite deliberately.
+
+Two related guarantees make repeated pipeline runs safe:
+
+- `measure_matches` cascades on delete from both `btr_measures` and
+  `ndc_quotes`, so re-ingestion and Tracker re-imports cannot fail on a
+  foreign-key violation.
+- `import-ndc` upserts quote rows instead of recreating them, so `ndc_quotes.id`
+  stays stable and confirmed matches survive a Tracker refresh. Only the
+  analyst's *classification choice* is reset (the underlying classification rows
+  are rebuilt with new ids); the confirmed match itself is kept.
 
 ## After stage 1
 
@@ -82,7 +113,7 @@ review_app/
 ├── __init__.py      # create_app factory + blueprint export
 ├── views.py         # routes
 ├── queries.py       # all SQL (read + write)
-├── templates/       # base, index, identify, relevance, match, _queue
+├── templates/       # base, index, identify, relevance, match, browse, measure, _queue
 └── static/style.css
 run_review_app.py    # local entry point
 ```

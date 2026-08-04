@@ -36,7 +36,7 @@ python pipeline.py export [--out btr_analysis_export.xlsx]
 python pipeline.py stats
 ```
 
-Both `batch` and `ingest` are idempotent: each document's measures are replaced on re-ingestion, keyed on (country, doc_type).
+Both `batch` and `ingest` are idempotent: each document's measures are replaced on re-ingestion, keyed on (country, doc_type). Documents that already carry analyst review decisions are **skipped** rather than overwritten — pass `--force` to replace them deliberately.
 
 ### Relevance screening
 

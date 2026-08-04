@@ -141,4 +141,96 @@ def match_save(measure_id: int):
 @bp.route("/match/<int:measure_id>/reopen", methods=["POST"])
 def match_reopen(measure_id: int):
     q.reopen_match(db(), measure_id)
-    return redirect(url_for("review.index"))
+    return redirect(request.form.get("back") or url_for("review.index"))
+
+
+# ---------------------------------------------------------------------------
+# Browse & edit
+# ---------------------------------------------------------------------------
+
+PAGE_SIZE = 50
+
+STATES = [
+    ("", "All measures"),
+    ("relevance_pending", "Relevance: pending"),
+    ("relevance_done", "Relevance: decided"),
+    ("match_pending", "Matching: pending"),
+    ("matched", "Matching: matched"),
+    ("btr_only", "Matching: BTR-only"),
+    ("edited", "Manually edited"),
+]
+
+
+@bp.route("/browse")
+def browse():
+    conn = db()
+    country = request.args.get("country") or None
+    state = request.args.get("state") or None
+    search = (request.args.get("q") or "").strip() or None
+    page = max(1, int(request.args.get("page", 1)))
+
+    rows, total = q.browse(conn, country, state, search,
+                           limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE)
+    return render_template(
+        "browse.html",
+        analyst=analyst(),
+        rows=rows, total=total, page=page, page_size=PAGE_SIZE,
+        pages=max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE),
+        country=country, state=state, search=search,
+        all_countries=q.all_countries(conn), states=STATES,
+    )
+
+
+@bp.route("/measure/<int:measure_id>")
+def measure_detail(measure_id: int):
+    conn = db()
+    m = q.measure(conn, measure_id)
+    if m is None:
+        return redirect(url_for("review.browse"))
+    return render_template(
+        "measure.html",
+        analyst=analyst(),
+        measure=m,
+        candidates=q.candidates(conn, measure_id),
+        editable=q.EDITABLE_FIELDS,
+        status_options=q.STATUS_OPTIONS,
+        back=request.args.get("back"),
+    )
+
+
+@bp.route("/measure/<int:measure_id>/fields", methods=["POST"])
+def measure_fields(measure_id: int):
+    q.update_fields(db(), measure_id, request.form.to_dict(),
+                    analyst() or "unknown")
+    return redirect(url_for("review.measure_detail", measure_id=measure_id))
+
+
+@bp.route("/measure/<int:measure_id>/relevance", methods=["POST"])
+def measure_relevance(measure_id: int):
+    """Set or clear the relevance decision from the detail page."""
+    decision = request.form.get("decision")
+    if decision == "reset":
+        q.reset_relevance(db(), measure_id)
+    elif decision in ("confirmed", "rejected"):
+        q.save_relevance(db(), measure_id, decision, analyst() or "unknown",
+                         request.form.get("note"))
+    return redirect(url_for("review.measure_detail", measure_id=measure_id))
+
+
+@bp.route("/measure/<int:measure_id>/match", methods=["POST"])
+def measure_match(measure_id: int):
+    """Re-decide match verdicts from the detail page (same form shape as stage 2)."""
+    decisions, choices, notes = {}, {}, {}
+    for key, value in request.form.items():
+        if not key.startswith("verdict-"):
+            continue
+        match_id = int(key.split("-", 1)[1])
+        decisions[match_id] = "confirmed" if value == "confirmed" else "rejected"
+        raw = request.form.get(f"classification-{match_id}")
+        choices[match_id] = int(raw) if raw else None
+        notes[match_id] = request.form.get(f"note-{match_id}")
+
+    if decisions:
+        q.save_match(db(), measure_id, analyst() or "unknown",
+                     decisions, choices, notes)
+    return redirect(url_for("review.measure_detail", measure_id=measure_id))

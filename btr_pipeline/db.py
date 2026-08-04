@@ -68,6 +68,8 @@ SCHEMA = [
         match_outcome       TEXT,
         matched_by          TEXT,
         matched_at          TEXT,
+        edited_by           TEXT,
+        edited_at           TEXT,
         embedding           TEXT
     );
     """,
@@ -123,17 +125,24 @@ SCHEMA = [
     """,
     # ndc_id points at ndc_quotes: matching operates on deduplicated quotes,
     # not on individual classification rows.
+    # ON DELETE CASCADE on both sides: a match is meaningless once either the
+    # BTR measure (document re-ingested) or the NDC quote (Tracker re-imported)
+    # is gone. Without it those deletes fail on a foreign-key violation.
     """
     CREATE TABLE IF NOT EXISTS measure_matches (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        btr_id           INTEGER REFERENCES btr_measures(id),
-        ndc_id           INTEGER REFERENCES ndc_quotes(id),
+        btr_id           INTEGER REFERENCES btr_measures(id) ON DELETE CASCADE,
+        ndc_id           INTEGER REFERENCES ndc_quotes(id) ON DELETE CASCADE,
         similarity_score REAL,
         rank             INTEGER,
         validated        TEXT,
         validated_by     TEXT,
         validated_at     TEXT,
-        selected_classification_id INTEGER REFERENCES ndc_measures(id),
+        -- SET NULL, not CASCADE: re-importing the Tracker rebuilds the
+        -- classification rows with new ids, and losing the analyst's taxonomy
+        -- choice must not take the confirmed match with it.
+        selected_classification_id INTEGER
+            REFERENCES ndc_measures(id) ON DELETE SET NULL,
         validation_note  TEXT
     );
     """,
@@ -202,10 +211,20 @@ def init_schema(conn: sqlite3.Connection) -> None:
         print("  (dropped legacy measure_matches table — re-run match to repopulate)")
     # measure_matches used to reference ndc_measures; now it references ndc_quotes
     if mm_cols:
-        fk_targets = {r[2] for r in conn.execute("PRAGMA foreign_key_list(measure_matches)")}
-        if "ndc_measures" in fk_targets:
+        fks = list(conn.execute("PRAGMA foreign_key_list(measure_matches)"))
+        # Legacy layout: ndc_id itself pointed at ndc_measures. Match on the
+        # *source column*, not just the target table — selected_classification_id
+        # legitimately references ndc_measures in the current schema.
+        if any(r[3] == "ndc_id" and r[2] == "ndc_measures" for r in fks):
             conn.execute("DROP TABLE measure_matches")
+            mm_cols = []
             print("  (dropped measure_matches with outdated FK — re-run match to repopulate)")
+        elif fks and any(r[3] in ("btr_id", "ndc_id") and r[6] != "CASCADE"
+                         for r in fks):
+            # Older rows lack ON DELETE CASCADE, which makes re-ingesting a
+            # document or re-importing the Tracker fail. Rebuild in place,
+            # preserving analyst validations.
+            _rebuild_measure_matches(conn)
 
     for stmt in SCHEMA:
         conn.execute(stmt)
@@ -227,12 +246,37 @@ ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("match_outcome", "TEXT"),
         ("matched_by", "TEXT"),
         ("matched_at", "TEXT"),
+        ("edited_by", "TEXT"),
+        ("edited_at", "TEXT"),
     ],
     "measure_matches": [
         ("selected_classification_id", "INTEGER"),
         ("validation_note", "TEXT"),
     ],
 }
+
+
+def _rebuild_measure_matches(conn: sqlite3.Connection) -> None:
+    """
+    Recreate measure_matches with ON DELETE CASCADE, carrying rows over.
+    SQLite cannot alter a foreign key in place, so the table is rebuilt.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(measure_matches)")]
+    carried = [c for c in cols if c != "id"]
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("ALTER TABLE measure_matches RENAME TO measure_matches_old")
+    for stmt in SCHEMA:
+        if "CREATE TABLE IF NOT EXISTS measure_matches" in stmt:
+            conn.execute(stmt)
+            break
+    conn.execute(
+        f"INSERT INTO measure_matches (id, {', '.join(carried)}) "
+        f"SELECT id, {', '.join(carried)} FROM measure_matches_old"
+    )
+    conn.execute("DROP TABLE measure_matches_old")
+    conn.execute("PRAGMA foreign_keys = ON")
+    n = conn.execute("SELECT COUNT(*) FROM measure_matches").fetchone()[0]
+    print(f"  (rebuilt measure_matches with ON DELETE CASCADE — {n} rows preserved)")
 
 
 def _add_missing_columns(conn: sqlite3.Connection) -> None:
@@ -254,6 +298,21 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
+class ReviewedDocumentError(RuntimeError):
+    """Raised when re-ingestion would discard existing analyst review work."""
+
+
+def document_review_count(conn: sqlite3.Connection, doc_id: int) -> int:
+    """Number of measures in a document carrying analyst review or edits."""
+    return conn.execute(
+        """SELECT COUNT(*) FROM btr_measures
+           WHERE document_id = ?
+             AND (reviewed_by IS NOT NULL OR matched_by IS NOT NULL
+                  OR edited_by IS NOT NULL)""",
+        (doc_id,),
+    ).fetchone()[0]
+
+
 def upsert_document(
     conn: sqlite3.Connection,
     country: str,
@@ -264,11 +323,16 @@ def upsert_document(
     table5_sheet: str | None = None,
     header_row_index: int | None = None,
     ghg_unit: str | None = None,
+    force: bool = False,
 ) -> int:
     """
     Insert or update the document row for (country, doc_type) and return its id.
     Existing measures for the document are deleted, making re-ingestion of a
     single document idempotent.
+
+    Re-ingestion discards the document's measures and therefore any analyst
+    review decisions attached to them. If the document carries review work,
+    a ReviewedDocumentError is raised unless force=True.
     """
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     row = conn.execute(
@@ -278,6 +342,14 @@ def upsert_document(
 
     if row:
         doc_id = row[0]
+        if not force:
+            reviewed = document_review_count(conn, doc_id)
+            if reviewed:
+                raise ReviewedDocumentError(
+                    f"{country}: {reviewed} measure(s) carry analyst review or "
+                    f"edits; re-ingesting would discard them. Re-run with "
+                    f"--force to overwrite."
+                )
         conn.execute(
             """UPDATE documents SET source_file = ?, file_hash = ?, doc_url = ?,
                table5_sheet = ?, header_row_index = ?, ghg_unit = ?, ingested_at = ?

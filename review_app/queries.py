@@ -224,6 +224,142 @@ def reopen_match(conn, measure_id: int) -> None:
     conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# Browse / edit
+# ---------------------------------------------------------------------------
+
+# Measure fields an analyst may correct in the UI. Everything else is either
+# provenance (source_row, file hash) or derived by the pipeline.
+EDITABLE_FIELDS = [
+    ("measure_name", "Measure name"),
+    ("description", "Description"),
+    ("objectives", "Objectives"),
+    ("type_of_instrument", "Type of instrument"),
+    ("status_raw", "Status (as reported)"),
+    ("status_normalized", "Status (normalised)"),
+    ("sectors", "Sector(s)"),
+    ("gases", "Gases"),
+    ("start_year", "Start year"),
+    ("implementing_entity", "Implementing entity"),
+    ("ghg_achieved", "GHG achieved"),
+    ("ghg_expected", "GHG expected"),
+]
+
+STATUS_OPTIONS = ["", "planned", "adopted", "implemented", "expired"]
+
+_BROWSE_BASE = """
+    SELECT m.id, m.measure_name, m.sectors, m.status_normalized,
+           m.relevance_source, m.review_status, m.match_outcome,
+           m.reviewed_by, m.matched_by, m.edited_by,
+           d.country,
+           (SELECT COUNT(*) FROM measure_matches mm
+            WHERE mm.btr_id = m.id) AS n_candidates,
+           (SELECT COUNT(*) FROM measure_matches mm
+            WHERE mm.btr_id = m.id AND mm.validated = 'confirmed') AS n_confirmed
+    FROM btr_measures m JOIN documents d ON d.id = m.document_id
+"""
+
+
+def _browse_where(country: str | None, state: str | None,
+                  search: str | None) -> tuple[str, list]:
+    clauses: list[str] = []
+    params: list = []
+
+    if country:
+        clauses.append("d.country = ?")
+        params.append(country)
+
+    # `state` filters on where the measure sits in the two-stage workflow
+    if state == "relevance_pending":
+        clauses.append("m.review_status = 'pending'")
+    elif state == "relevance_done":
+        clauses.append("m.review_status IN ('confirmed','rejected')")
+    elif state == "match_pending":
+        clauses.append("m.match_outcome IS NULL AND EXISTS "
+                       "(SELECT 1 FROM measure_matches mm WHERE mm.btr_id = m.id)")
+    elif state == "matched":
+        clauses.append("m.match_outcome = 'matched'")
+    elif state == "btr_only":
+        clauses.append("m.match_outcome = 'btr_only'")
+    elif state == "edited":
+        clauses.append("m.edited_by IS NOT NULL")
+
+    if search:
+        clauses.append("(m.measure_name LIKE ? OR m.description LIKE ?)")
+        like = f"%{search}%"
+        params += [like, like]
+
+    return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+
+def browse(conn, country=None, state=None, search=None,
+           limit: int = 50, offset: int = 0) -> tuple[list[sqlite3.Row], int]:
+    where, params = _browse_where(country, state, search)
+    total = conn.execute(
+        "SELECT COUNT(*) FROM btr_measures m JOIN documents d "
+        "ON d.id = m.document_id" + where, params
+    ).fetchone()[0]
+    rows = conn.execute(
+        _BROWSE_BASE + where + " ORDER BY d.country, m.id LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    return rows, total
+
+
+def all_countries(conn) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT country FROM documents ORDER BY country")]
+
+
+def update_fields(conn, measure_id: int, values: dict, analyst: str) -> int:
+    """Write edited measure fields. Returns the number of fields changed."""
+    current = conn.execute(
+        f"SELECT {', '.join(f for f, _ in EDITABLE_FIELDS)} "
+        "FROM btr_measures WHERE id = ?", (measure_id,)
+    ).fetchone()
+    if current is None:
+        return 0
+
+    changed: dict[str, object] = {}
+    for field, _label in EDITABLE_FIELDS:
+        if field not in values:
+            continue
+        new = values[field]
+        new = new.strip() if isinstance(new, str) else new
+        if new == "":
+            new = None
+        if field in ("start_year",):
+            new = int(new) if new not in (None, "") else None
+        elif field in ("ghg_achieved", "ghg_expected"):
+            new = float(new) if new not in (None, "") else None
+        if new != current[field]:
+            changed[field] = new
+
+    if not changed:
+        return 0
+
+    assignments = ", ".join(f"{f} = ?" for f in changed)
+    conn.execute(
+        f"UPDATE btr_measures SET {assignments}, edited_by = ?, edited_at = ? "
+        "WHERE id = ?",
+        [*changed.values(), analyst, now(), measure_id],
+    )
+    conn.commit()
+    return len(changed)
+
+
+def reset_relevance(conn, measure_id: int) -> None:
+    """Return a content_match measure to the relevance queue."""
+    conn.execute(
+        """UPDATE btr_measures
+           SET review_status = 'pending', reviewed_by = NULL,
+               reviewed_at = NULL, review_note = NULL
+           WHERE id = ? AND relevance_source = 'content_match'""",
+        (measure_id,),
+    )
+    conn.commit()
+
+
 def recent_decisions(conn, limit: int = 15) -> list[sqlite3.Row]:
     """Most recently reviewed measures, for the landing page / undo."""
     return conn.execute(
