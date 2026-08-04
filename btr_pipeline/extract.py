@@ -84,7 +84,7 @@ STATUS_BUCKETS: list[tuple[str, list[str]]] = [
     ("expired", ["expired", "expiré", "discontinued", "ended", "abandon", "cancel"]),
     ("planned", ["plan", "planifi", "prévu", "previst", "запланир",
                  "envisag", "proposed", "under development", "in preparation",
-                 "предлага", "not commenced"]),
+                 "предлага", "not commenced", "not yet implemented", "not yet in force"]),
     ("adopted", ["adopt", "adopté", "adoptad", "принят", "approved",
                  "aprobad", "aprovad", "enacted"]),
     ("implemented", ["implement", "mise en œuvre", "mise en oeuvre",

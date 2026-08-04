@@ -91,7 +91,7 @@ erDiagram
   documents {
     int id PK
     string country
-    string doc_type "BTR1 (BTR2-ready)"
+    string doc_type 
     string source_file
     string file_hash
     string doc_url
@@ -125,17 +125,6 @@ erDiagram
     text embedding
   }
 
-  ndc_quotes {
-    int id PK
-    string country
-    text quote
-    string doc_types "aggregated, e.g. NDC, LTS"
-    string versions "aggregated, e.g. NDC 2.0, NDC 3.0"
-    string doc_statuses "aggregated"
-    int n_classifications
-    blob embedding
-  }
-
   ndc_measures {
     int id PK
     int quote_id FK
@@ -143,16 +132,16 @@ erDiagram
     string country_code
     string country
     string region
-    string doc_type "NDC | LTS"
+    string doc_type 
     string document_name
-    string version "e.g. NDC 3.0"
-    string doc_status "Active | Archived"
+    string version 
+    string doc_status 
     string doc_date
     string category
     string purpose
     string instrument
     text quote
-    string asi "Avoid | Shift | Improve"
+    string asi 
     string page
     string modes "condensed x-flags"
     string geography "condensed x-flags"
@@ -163,6 +152,17 @@ erDiagram
     string income_group
     string g20
     string detailed_document_name
+  }
+
+  ndc_quotes {
+    int id PK
+    string country
+    text quote
+    string doc_types "aggregated, e.g. NDC, LTS"
+    string versions "aggregated, e.g. NDC 2.0, NDC 3.0"
+    string doc_statuses "aggregated"
+    int n_classifications
+    blob embedding
   }
 
   measure_matches {
