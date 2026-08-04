@@ -1,0 +1,12 @@
+# Core — needed to read the database, run the pipeline and the review app
+openpyxl>=3.1
+flask>=3.0
+
+# Semantic matching and LLM classification (pipeline.py embed / match / classify).
+# Not needed to run the review app against an existing database.
+openai>=1.40
+
+# UNFCCC scraping and download (brt_transport_analysis.py only).
+# After installing, run once: playwright install chromium
+playwright>=1.40
+requests>=2.31

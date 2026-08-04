@@ -4,13 +4,15 @@
 
 <div class="card">
   <h1>Validation workflow</h1>
-  <p class="lead">Two stages. Stage 1 decides which measures belong in the
-     dataset at all; stage 2 links them to what the country committed to.</p>
+  <p class="lead">Stage 1 decides which measures belong in the dataset at all;
+     stage 2 links them to what the country committed to. Use
+     <a href="{{ url_for('review.browse') }}">3 · Browse</a> to revisit or
+     change anything already decided.</p>
 
   {% if not analyst %}
   <form class="inline-id" method="post" action="{{ url_for('review.identify') }}">
     <label>Your name</label>
-    <input class="text" type="text" name="analyst" placeholder="e.g. Nicolas Becker" required>
+    <input class="text" type="text" name="analyst" placeholder="e.g. NB" required>
     <button class="btn" type="submit">Save</button>
   </form>
   {% endif %}

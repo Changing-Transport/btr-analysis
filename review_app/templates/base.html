@@ -15,7 +15,7 @@
       <a href="{{ url_for('review.match') }}"
          class="{% if request.endpoint == 'review.match' %}on{% endif %}">2 · Matching</a>
       <a href="{{ url_for('review.browse') }}"
-         class="{% if request.endpoint in ('review.browse', 'review.measure_detail') %}on{% endif %}">Browse</a>
+         class="{% if request.endpoint in ('review.browse', 'review.measure_detail') %}on{% endif %}">3 · Browse</a>
     </nav>
     <div class="who">
       {% if analyst %}

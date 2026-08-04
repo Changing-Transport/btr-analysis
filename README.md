@@ -1,8 +1,35 @@
 # BTR Transport Analysis Pipeline
 
-A Python-based pipeline that extracts transport-relevant climate policy measures from Biennial Transparency Reports (BTRs), stores them in a reviewable database, and is designed to match them against existing NDC measures via semantic similarity (matching step deferred until the NDC import is available).
+A Python-based pipeline that extracts transport-relevant climate policy measures from Biennial Transparency Reports (BTRs), matches them against the NDC commitments in the GIZ-SLOCAT Tracker via semantic similarity, and ships a web app in which analysts validate the results.
 
-Developed as an extension of the [NDC Transport Tracker](https://changing-transport.org/tracker/), a joint initiative by GIZ and the Partnership on Sustainable, Low Carbon Transport (SLOCAT). Designed to be complementary to the [climate-policy-miner](https://transport-policy-miner.greendesert-33ef5f35.germanywestcentral.azurecontainerapps.io/) app: the review interface will be integrated there, and the LLM steps use the same Azure OpenAI environment variables.
+Developed as an extension of the [NDC Transport Tracker](https://changing-transport.org/tracker/), a joint initiative by GIZ and the Partnership on Sustainable, Low Carbon Transport (SLOCAT). Designed to be complementary to the [climate-policy-miner](https://transport-policy-miner.greendesert-33ef5f35.germanywestcentral.azurecontainerapps.io/) app: the review app is a Flask blueprint that can be mounted there, and the LLM steps use the same Azure OpenAI environment variables.
+
+## Try the review app
+
+The repository ships with the populated database, so no pipeline run or API key
+is needed to look at the data.
+
+```bash
+git clone https://github.com/Changing-Transport/btr-analysis.git
+cd btr-analysis
+python -m venv .venv
+```
+
+Activate the environment — `\.venv\Scripts\activate` (Windows PowerShell) or
+`source .venv/bin/activate` (macOS/Linux) — then:
+
+```bash
+pip install flask
+python run_review_app.py
+```
+
+Open <http://127.0.0.1:5000>, enter your initials, and start with **2 · Matching**.
+See [review_app/README.md](review_app/README.md) for what each stage does, and
+[TESTING.md](TESTING.md) for a guided walk-through aimed at reviewers.
+
+> Each clone carries its own copy of `data/btr_analysis.db`, so decisions made
+> locally stay local — fine for trying the app out, not for splitting real review
+> work. Shared review needs the hosted deployment (see *Next Steps*).
 
 ## Background
 
@@ -191,13 +218,21 @@ erDiagram
 
 ## Requirements
 
+Python ≥ 3.10 plus, from [requirements.txt](requirements.txt):
+
+| Package | Needed for |
+|---|---|
+| `openpyxl` | reading BTR/Tracker workbooks, Excel export |
+| `flask` | the review app |
+| `openai` | `embed` / `match` / `classify` |
+| `playwright`, `requests` | UNFCCC scraping (`brt_transport_analysis.py`) |
+
+```bash
+pip install -r requirements.txt     # everything
+pip install flask                   # enough for the review app alone
 ```
-python >= 3.10
-openpyxl
-playwright + requests   (scraping/download step only)
-openai                  (embed / match / classify steps only)
-flask                   (review app only)
-```
+
+`playwright install chromium` is only required before scraping.
 
 Azure OpenAI credentials for `embed` / `match` / `classify`, read from a local `.env` file (gitignored) or the environment:
 
@@ -223,6 +258,8 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 │   └── export.py                 # database -> Excel workbook
 ├── review_app/                   # Analyst review app (Flask; see its README)
 ├── run_review_app.py             # Local entry point for the review app
+├── requirements.txt              # Dependencies
+├── TESTING.md                    # Walk-through for colleagues trying the app
 ├── brt_transport_analysis.py     # Scrapes UNFCCC and downloads BTR Excel files
 ├── data/
 │   ├── btr_analysis.db           # SQLite database
@@ -248,9 +285,11 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 
 ## Review app
 
-`review_app/` is a Flask app (blueprint behind a factory) where analysts screen
-relevance and validate matches directly against the database — see
-[review_app/README.md](review_app/README.md).
+`review_app/` is a Flask app (blueprint behind a factory) with three stages —
+relevance screening, match validation, and a browse/edit view for revising any
+earlier decision or correcting extracted fields. See
+[review_app/README.md](review_app/README.md) for the workflow and
+[TESTING.md](TESTING.md) for the reviewer-facing walk-through.
 
 ```bash
 python run_review_app.py     # http://127.0.0.1:5000

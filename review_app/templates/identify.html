@@ -7,7 +7,7 @@
      discuss them later. No password needed for the pilot.</p>
   <form method="post" action="{{ url_for('review.identify') }}">
     <input type="hidden" name="next" value="{{ next_url }}">
-    <input class="text" type="text" name="analyst" placeholder="e.g. Nicolas Becker"
+    <input class="text" type="text" name="analyst" placeholder="e.g. NB"
            autofocus required>
     <button class="btn primary" type="submit">Start reviewing</button>
   </form>
