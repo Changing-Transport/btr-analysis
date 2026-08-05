@@ -21,6 +21,7 @@ import os
 import shutil
 
 from btr_pipeline import db as dbmod
+from btr_pipeline.env import load_env_file
 from review_app import create_app
 
 SNAPSHOT_DB = os.path.join("data", "btr_analysis.db")
@@ -51,6 +52,9 @@ def main() -> None:
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
+    # Azure OpenAI credentials, if present, let the app generate candidates for
+    # a measure the moment it is confirmed transport-relevant.
+    load_env_file()
     ensure_working_copy(args.db)
 
     # Ensure the review columns exist before serving.

@@ -138,6 +138,111 @@ def embed_missing(conn, log=print) -> dict:
 # Match step
 # ---------------------------------------------------------------------------
 
+def candidate_pool(conn, country: str, include_archived: bool = True
+                   ) -> tuple[list[tuple[int, list[float]]], str | None]:
+    """
+    Candidate NDC quote vectors for one country, applying the same fallback
+    chain as run_matching. Returns (pool, fallback_used).
+    """
+    def load(where: str, params: tuple) -> list[tuple[int, list[float]]]:
+        return [
+            (qid, blob_to_vec(blob))
+            for qid, blob in conn.execute(
+                f"SELECT id, embedding FROM ndc_quotes "
+                f"WHERE embedding IS NOT NULL AND {where}", params
+            )
+        ]
+
+    ndc_country = to_tracker_name(country)
+    status_clause = "" if include_archived else " AND doc_statuses LIKE '%Active%'"
+
+    pool = load(f"country = ?{status_clause}", (ndc_country,))
+    if pool:
+        return pool, None
+
+    if ndc_country in EU_MEMBERS:
+        pool = load(f"country = ?{status_clause}", (EU_TRACKER_NAME,))
+        if pool:
+            return pool, "european-union"
+
+    if not include_archived:
+        pool = load("country = ?", (ndc_country,))
+        if pool:
+            return pool, "archived"
+
+    return [], None
+
+
+def match_one(conn, btr_id: int, include_archived: bool = True) -> dict:
+    """
+    Generate top-K candidates for a single BTR measure, embedding it first if
+    it has no vector yet. Used by the review app so a measure confirmed as
+    transport-relevant gets its candidates straight away.
+
+    Returns {"candidates": int, "fallback": str | None, "reason": str | None}.
+    `reason` explains an empty result: 'no-credentials', 'no-pool' or
+    'not-found'. Any analyst validations on this measure are preserved.
+    """
+    row = conn.execute(
+        """SELECT m.id, m.embedding, m.measure_name, m.description, m.objectives,
+                  d.country
+           FROM btr_measures m JOIN documents d ON d.id = m.document_id
+           WHERE m.id = ?""",
+        (btr_id,),
+    ).fetchone()
+    if row is None:
+        return {"candidates": 0, "fallback": None, "reason": "not-found"}
+
+    _id, blob, name, description, objectives, country = row
+
+    if blob is None:
+        try:
+            client, deployment = get_embedding_client()
+            vectors = embed_texts(client, deployment,
+                                  [btr_text(name, description, objectives)])
+        except Exception:
+            # No credentials, or the API is unavailable: the relevance decision
+            # still stands, candidates can be generated later by `pipeline.py
+            # embed && match`.
+            return {"candidates": 0, "fallback": None, "reason": "no-credentials"}
+        blob = vec_to_blob(vectors[0])
+        conn.execute("UPDATE btr_measures SET embedding = ? WHERE id = ?",
+                     (blob, btr_id))
+
+    pool, fallback = candidate_pool(conn, country, include_archived)
+    if not pool:
+        conn.commit()
+        return {"candidates": 0, "fallback": None, "reason": "no-pool"}
+
+    vec = blob_to_vec(blob)
+    scored = sorted(((dot(vec, cvec), cid) for cid, cvec in pool),
+                    reverse=True)[:TOP_K]
+
+    prior = {
+        r[0]: (r[1], r[2], r[3], r[4], r[5])
+        for r in conn.execute(
+            """SELECT ndc_id, validated, validated_by, validated_at,
+                      selected_classification_id, validation_note
+               FROM measure_matches WHERE btr_id = ? AND validated IS NOT NULL""",
+            (btr_id,),
+        )
+    }
+    conn.execute("DELETE FROM measure_matches WHERE btr_id = ?", (btr_id,))
+
+    for rank, (score, ndc_id) in enumerate(scored, 1):
+        validated, by, at, cls, note = prior.get(ndc_id, (None,) * 5)
+        conn.execute(
+            """INSERT INTO measure_matches
+               (btr_id, ndc_id, similarity_score, rank, validated, validated_by,
+                validated_at, selected_classification_id, validation_note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (btr_id, ndc_id, round(score, 4), rank, validated, by, at, cls, note),
+        )
+
+    conn.commit()
+    return {"candidates": len(scored), "fallback": fallback, "reason": None}
+
+
 def run_matching(conn, log=print, include_archived: bool = True) -> dict:
     """
     Compute top-K NDC candidates per embedded BTR measure and rewrite

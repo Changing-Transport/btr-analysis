@@ -81,6 +81,11 @@ its NDC and BTR wording is nearly identical, so it shows the tool at its best.
 are false positives — an energy-efficiency programme that merely mentions
 vehicles in passing — and rejecting them is exactly the point.
 
+Note: confirming one as transport-relevant normally pulls its NDC candidates
+in straight away, so it lands in the matching queue. That step needs an Azure
+OpenAI key which this test setup does not include, so you will instead see a
+note saying candidates will be generated later — that is expected, not a fault.
+
 **4. Open “3 · Browse”** to find anything you already decided. Filter by
 country or state, open a measure, and try:
 

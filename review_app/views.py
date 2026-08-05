@@ -1,6 +1,6 @@
 """Routes for the analyst review app."""
 
-from flask import (Blueprint, current_app, g, redirect, render_template,
+from flask import (Blueprint, current_app, flash, g, redirect, render_template,
                    request, session, url_for)
 
 from . import queries as q
@@ -24,6 +24,43 @@ def close_db(exc):
 
 def analyst() -> str | None:
     return session.get("analyst")
+
+
+def generate_candidates(measure_id: int, country: str | None) -> None:
+    """
+    After a measure is confirmed transport-relevant, immediately embed it and
+    write its top-k NDC candidates, so it enters the matching queue without a
+    separate pipeline run. Flashes the outcome; never blocks the decision.
+    """
+    from btr_pipeline.match import match_one
+
+    try:
+        res = match_one(db(), measure_id)
+    except Exception as exc:                     # noqa: BLE001 - surfaced to the analyst
+        current_app.logger.warning("candidate generation failed: %s", exc)
+        flash("Confirmed. Candidates could not be generated right now — "
+              "run `pipeline.py embed && pipeline.py match` later.", "warn")
+        return
+
+    if res["candidates"]:
+        note = ""
+        if res["fallback"] == "european-union":
+            note = " (from the joint EU NDC — no national entry in the Tracker)"
+        elif res["fallback"] == "archived":
+            note = " (from archived NDC generations)"
+        flash(f"Confirmed — {res['candidates']} NDC candidate"
+              f"{'s' if res['candidates'] != 1 else ''} ready for matching{note}.",
+              "ok")
+    elif res["reason"] == "no-credentials":
+        flash("Confirmed. Azure OpenAI credentials are not configured, so "
+              "candidates will be generated later by "
+              "`pipeline.py embed && pipeline.py match`.", "warn")
+    elif res["reason"] == "no-pool":
+        flash(f"Confirmed. The Tracker has no NDC entries for "
+              f"{country or 'this country'}, so there is nothing to match against.",
+              "warn")
+    else:
+        flash("Confirmed.", "ok")
 
 
 @bp.route("/")
@@ -77,11 +114,13 @@ def relevance():
 @bp.route("/relevance/<int:measure_id>", methods=["POST"])
 def relevance_save(measure_id: int):
     decision = request.form.get("decision")
+    country = request.form.get("country") or None
     if decision in ("confirmed", "rejected"):
         q.save_relevance(db(), measure_id, decision, analyst() or "unknown",
                          request.form.get("note"))
-    return redirect(url_for("review.relevance",
-                            country=request.form.get("country") or None))
+        if decision == "confirmed":
+            generate_candidates(measure_id, country)
+    return redirect(url_for("review.relevance", country=country))
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +253,9 @@ def measure_relevance(measure_id: int):
     elif decision in ("confirmed", "rejected"):
         q.save_relevance(db(), measure_id, decision, analyst() or "unknown",
                          request.form.get("note"))
+        if decision == "confirmed":
+            m = q.measure(db(), measure_id)
+            generate_candidates(measure_id, m["country"] if m else None)
     return redirect(url_for("review.measure_detail", measure_id=measure_id))
 
 

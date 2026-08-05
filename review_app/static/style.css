@@ -208,6 +208,14 @@ form .text + .actions { margin-top: 12px; }
 .rows tr:last-child td { border-bottom: 0; }
 .clip { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- flash messages ---------- */
+.flash {
+  padding: 11px 16px; border-radius: 8px; margin-bottom: 16px;
+  font-size: 14px; border: 1px solid transparent;
+}
+.flash.ok { background: var(--okbg); border-color: #bfe3ce; color: var(--ok); }
+.flash.warn { background: var(--warnbg); border-color: #ecd9a6; color: var(--warn); }
+
 /* ---------- browse & detail ---------- */
 .filters { display: flex; gap: 10px; align-items: center; padding: 16px 20px; }
 .filters .search { flex: 1; min-width: 180px; }

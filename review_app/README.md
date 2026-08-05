@@ -81,18 +81,24 @@ Two related guarantees make repeated pipeline runs safe:
   analyst's *classification choice* is reset (the underlying classification rows
   are rebuilt with new ids); the confirmed match itself is kept.
 
-## After stage 1
+## From stage 1 straight into stage 2
 
-Measures newly confirmed as transport-relevant have no candidates yet. Generate
-them with:
+Confirming a measure as transport-relevant **generates its NDC candidates
+immediately**: the app embeds that one measure via Azure OpenAI and scores it
+against the country's quotes (already embedded), so it appears in the stage-2
+queue right away. The confirmation message says how many candidates were found.
+
+This needs `AZURE_OPENAI_*` credentials, which `run_review_app.py` reads from
+`.env`. Without them the relevance decision is still saved — the app just says
+candidates will follow later, and you generate them in bulk with:
 
 ```bash
 python pipeline.py embed && python pipeline.py match
 ```
 
 `embed` covers `review_status IN ('auto','confirmed')`, so confirmed measures
-get vectors and then candidates. Existing analyst validations survive `match`
-re-runs (re-attached by `btr_id` + `ndc_id`).
+get vectors and then candidates. Existing analyst validations survive both the
+on-the-fly path and `match` re-runs (re-attached by `btr_id` + `ndc_id`).
 
 ## Identity
 
