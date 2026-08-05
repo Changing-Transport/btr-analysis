@@ -1,8 +1,6 @@
 # Trying out the BTR review app
 
-A short guide for colleagues who want to test the app and give feedback. It
-takes about 10 minutes to set up and you need no API keys — the repository
-already contains the populated database.
+A short guide to test the app and give feedback. 
 
 ## What you are looking at
 
