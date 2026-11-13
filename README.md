@@ -275,6 +275,30 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 └── README.md
 ```
 
+### Sharing & syncing review decisions via Git
+
+Because `data/btr_analysis.local.db` is git-ignored, your review decisions stay local until you promote them to the tracked snapshot (`data/btr_analysis.db`) and push them to GitHub:
+
+1. **Stop the review app** (`Ctrl+C` in the terminal) and close any open database viewers so SQLite flushes pending `.db-wal` / `.db-shm` changes into the main file.
+2. **Overwrite the tracked snapshot** with your updated working copy:
+   ```bash
+   # macOS / Linux / Git Bash
+   cp data/btr_analysis.local.db data/btr_analysis.db
+
+   # Windows (PowerShell / CMD)
+   copy data\btr_analysis.local.db data\btr_analysis.db
+   ```
+3. **Commit and push** the updated snapshot:
+   ```bash
+   git pull
+   git add data/btr_analysis.db
+   git commit -m "Update btr_analysis.db snapshot with latest review decisions"
+   git push
+   ```
+
+**Pulling a colleague's updates:** After running `git pull`, your existing `data/btr_analysis.local.db` will **not** be overwritten automatically. To load the newly pulled snapshot, delete (or back up) your local `data/btr_analysis.local.db` and restart `python run_review_app.py` to generate a fresh working copy.
+
+
 ## Current State (2026-07)
 
 * 113 cached CTF-NDC files, 112 ingested (Andorra submitted no Table 5)
