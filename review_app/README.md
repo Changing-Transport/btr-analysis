@@ -24,7 +24,9 @@ stop the app before running git operations against it.
 
 **Stage 1 — Relevance.** The 839 `content_match` measures are filed under a
 non-transport sector (mostly energy/industry) but mention transport in their
-text. The analyst sees the measure, which keywords triggered it, and the LLM
+text. All of them were decided in the first review round (2026-11: 262
+confirmed, 577 rejected), so the queue is empty until new BTRs are ingested;
+earlier decisions can still be revised in *Browse*. The analyst sees the measure, which keywords triggered it, and the LLM
 verdict if `pipeline.py classify` has run, then decides **transport-relevant**
 or **not transport**. Writes `review_status` = `confirmed` / `rejected` plus
 `reviewed_by` / `reviewed_at` / `review_note`.
@@ -93,12 +95,15 @@ This needs `AZURE_OPENAI_*` credentials, which `run_review_app.py` reads from
 candidates will follow later, and you generate them in bulk with:
 
 ```bash
-python pipeline.py embed && python pipeline.py match
+python pipeline.py --db data/btr_analysis.local.db embed
+python pipeline.py --db data/btr_analysis.local.db match --missing-only
 ```
 
 `embed` covers `review_status IN ('auto','confirmed')`, so confirmed measures
-get vectors and then candidates. Existing analyst validations survive both the
-on-the-fly path and `match` re-runs (re-attached by `btr_id` + `ndc_id`).
+get vectors; `match --missing-only` then adds candidates only for measures that
+have none and leaves existing rows untouched. A full `match` re-run also keeps
+analyst work (verdict, analyst, timestamp, classification choice and note are
+re-attached by `btr_id` + `ndc_id`), but recomputes every candidate list.
 
 ## Identity
 
