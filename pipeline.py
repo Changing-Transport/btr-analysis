@@ -261,11 +261,14 @@ def cmd_embed(args) -> None:
 
 def cmd_match(args) -> None:
     load_env_file()
-    from btr_pipeline.match import run_matching
+    from btr_pipeline.match import match_missing, run_matching
 
     conn = dbmod.connect(args.db)
     dbmod.init_schema(conn)
-    run_matching(conn, log=log, include_archived=not args.active_only)
+    if args.missing_only:
+        match_missing(conn, log=log, include_archived=not args.active_only)
+    else:
+        run_matching(conn, log=log, include_archived=not args.active_only)
     conn.close()
 
 
@@ -429,6 +432,9 @@ def main() -> None:
     p_match.add_argument("--active-only", action="store_true",
                          help="Match only against Active NDC documents "
                               "(default: all generations incl. archived)")
+    p_match.add_argument("--missing-only", action="store_true",
+                         help="Only add candidates for relevant measures that "
+                              "have none; leave existing matches untouched")
     p_match.set_defaults(func=cmd_match)
 
     p_classify = sub.add_parser("classify", help="LLM confirmation of pending measures")

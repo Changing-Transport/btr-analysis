@@ -258,11 +258,13 @@ def run_matching(conn, log=print, include_archived: bool = True) -> dict:
       2. Active European Union measures (EU member states, joint EU NDC)
       3. Archived national measures (only relevant in Active-only mode)
     """
-    # Preserve prior validations before clearing
+    # Preserve prior validations (verdict, analyst, timestamp, classification
+    # choice and note) before clearing, so a full re-run loses no review work.
     prior = {
-        (r[0], r[1]): (r[2], r[3], r[4])
+        (r[0], r[1]): tuple(r[2:])
         for r in conn.execute(
-            """SELECT btr_id, ndc_id, validated, validated_by, validated_at
+            """SELECT btr_id, ndc_id, validated, validated_by, validated_at,
+                      selected_classification_id, validation_note
                FROM measure_matches WHERE validated IS NOT NULL"""
         )
     }
@@ -287,6 +289,7 @@ def run_matching(conn, log=print, include_archived: bool = True) -> dict:
         """SELECT m.id, d.country, m.embedding
            FROM btr_measures m JOIN documents d ON d.id = m.document_id
            WHERE m.embedding IS NOT NULL
+             AND m.review_status IN ('auto', 'confirmed')
            ORDER BY d.country, m.id"""
     ).fetchall()
 
@@ -319,13 +322,15 @@ def run_matching(conn, log=print, include_archived: bool = True) -> dict:
         )[:TOP_K]
 
         for rank, (score, ndc_id) in enumerate(scored, 1):
-            validated, by, at = prior.get((btr_id, ndc_id), (None, None, None))
+            validated, by, at, cls, note = prior.get((btr_id, ndc_id), (None,) * 5)
             conn.execute(
                 """INSERT INTO measure_matches
-                   (btr_id, ndc_id, similarity_score, rank,
-                    validated, validated_by, validated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (btr_id, ndc_id, round(score, 4), rank, validated, by, at),
+                   (btr_id, ndc_id, similarity_score, rank, validated,
+                    validated_by, validated_at, selected_classification_id,
+                    validation_note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (btr_id, ndc_id, round(score, 4), rank, validated, by, at,
+                 cls, note),
             )
         stats["matched"] += 1
 
@@ -339,4 +344,48 @@ def run_matching(conn, log=print, include_archived: bool = True) -> dict:
             f"{', '.join(sorted(stats['archived_fallback']))}")
     if stats["no_candidates"]:
         log(f"No NDC candidates for: {', '.join(sorted(stats['no_candidates']))}")
+    return stats
+
+
+def match_missing(conn, log=print, include_archived: bool = True) -> dict:
+    """
+    Incremental matching: generate top-K candidates only for relevant BTR
+    measures (auto/confirmed) that have none yet. Existing measure_matches rows,
+    and the review work attached to them, are not touched.
+
+    Embeds any measure still lacking a vector (one API call each), so running
+    `embed` first is optional but cheaper for large batches.
+    """
+    todo = conn.execute(
+        """SELECT m.id FROM btr_measures m
+           WHERE m.review_status IN ('auto', 'confirmed')
+             AND NOT EXISTS (SELECT 1 FROM measure_matches mm
+                             WHERE mm.btr_id = m.id)
+           ORDER BY m.id"""
+    ).fetchall()
+    log(f"{len(todo)} relevant BTR measures without candidates.")
+
+    stats = {"matched": 0, "no_pool": [], "no_credentials": 0,
+             "eu_fallback": 0, "archived_fallback": 0}
+    for (btr_id,) in todo:
+        res = match_one(conn, btr_id, include_archived)
+        if res["candidates"]:
+            stats["matched"] += 1
+            if res["fallback"] == "european-union":
+                stats["eu_fallback"] += 1
+            elif res["fallback"] == "archived":
+                stats["archived_fallback"] += 1
+        elif res["reason"] == "no-pool":
+            stats["no_pool"].append(btr_id)
+        elif res["reason"] == "no-credentials":
+            stats["no_credentials"] += 1
+
+    log(f"Matched {stats['matched']} measures (top-{TOP_K} each); "
+        f"EU fallback {stats['eu_fallback']}, "
+        f"archived fallback {stats['archived_fallback']}.")
+    if stats["no_pool"]:
+        log(f"No NDC candidates in the Tracker for {len(stats['no_pool'])} measures.")
+    if stats["no_credentials"]:
+        log(f"WARNING: {stats['no_credentials']} measures could not be embedded "
+            f"(missing Azure OpenAI credentials or API error).")
     return stats
