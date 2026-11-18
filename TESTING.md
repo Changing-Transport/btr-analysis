@@ -10,6 +10,7 @@ The app supports two analytical questions:
    countries under *energy* or *industry* but describe transport (electric
    buses, fuel standards, rail freight). An automatic keyword screen flagged
    839 such measures; they need a human verdict.
+   All 839 have now been decided (262 confirmed, 577 rejected).
 2. **Does this implemented measure correspond to something the country
    committed to?** For each transport measure in a BTR, the tool proposes the
    three most similar NDC/LTS commitments from the GIZ-SLOCAT Tracker, and you
@@ -75,14 +76,15 @@ Try a few measures. **Malawi** is a good starting point (use the country filter)
 its NDC and BTR wording is nearly identical, so it shows the tool at its best.
 **Albania** or **Croatia** show harder, more typical cases.
 
-**3. Open “1 · Relevance”** and judge a handful of the flagged measures. Many
-are false positives — an energy-efficiency programme that merely mentions
-vehicles in passing — and rejecting them is exactly the point.
+**3. “1 · Relevance”** is empty: all flagged measures have been decided. To
+see or question those decisions, use *Browse* with the state filter
+*Relevance: decided*. Many were false positives, e.g. an energy-efficiency
+programme that merely mentions vehicles in passing.
 
-Note: confirming one as transport-relevant normally pulls its NDC candidates
-in straight away, so it lands in the matching queue. That step needs an Azure
-OpenAI key which this test setup does not include, so you will instead see a
-note saying candidates will be generated later — that is expected, not a fault.
+Note: if you change a decision to transport-relevant, the app normally pulls
+the measure's NDC candidates in straight away. That step needs an Azure OpenAI
+key which this test setup does not include, so you will instead see a note
+saying candidates will be generated later. That is expected, not a fault.
 
 **4. Open “3 · Browse”** to find anything you already decided. Filter by
 country or state, open a measure, and try:
@@ -114,8 +116,8 @@ Screenshots of anything odd are very welcome.
   share that file — or just tell us what you found.
 - There is no undo history — a changed decision overwrites the previous one
   (though you can always change it back).
-- Guyana and the Philippines have no entries in the Tracker, so their measures
-  have no candidates at all.
+- Bahrain, Guyana and the Philippines have no entries in the Tracker, so their
+  measures have no candidates at all.
 - The app is a **demo**: no login, and it runs on the Flask development server.
 
 ## If something goes wrong

@@ -1,8 +1,12 @@
 """
-Data-access layer for btr_analysis.db.
+Data-access layer for the BTR analysis database.
 
-All SQL lives here so the storage backend can be swapped (e.g. Azure PostgreSQL)
-by porting a single module. Column types are kept portable: TEXT, INTEGER, REAL.
+Two backends with one code path:
+  * SQLite file (default, `data/btr_analysis.db`) for local work and the
+    version-controlled snapshot;
+  * PostgreSQL (Azure Database for PostgreSQL), selected by passing a
+    `postgresql://` URL as the target, or via the BTR_DATABASE_URL variable.
+    Tables live in the `btr` schema; see pg.py for the dialect bridge.
 
 Tables:
     documents        — one row per ingested source document (country + doc_type unique)
@@ -21,14 +25,20 @@ View:
 
 import hashlib
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
+
+from .countries import to_iso3, to_tracker_name
+
+DEFAULT_DB = os.path.join("data", "btr_analysis.db")
 
 SCHEMA = [
     """
     CREATE TABLE IF NOT EXISTS documents (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
         country          TEXT NOT NULL,
+        country_code     TEXT,
         doc_type         TEXT NOT NULL DEFAULT 'BTR1',
         source_file      TEXT NOT NULL,
         file_hash        TEXT,
@@ -70,6 +80,8 @@ SCHEMA = [
         matched_at          TEXT,
         edited_by           TEXT,
         edited_at           TEXT,
+        locked_by           TEXT,
+        locked_at           TEXT,
         embedding           TEXT
     );
     """,
@@ -172,19 +184,109 @@ MEASURE_COLUMNS = [
 ]
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+def is_postgres_url(target: str | None) -> bool:
+    return bool(target) and target.startswith(("postgresql://", "postgres://"))
+
+
+def resolve_target(target: str | None = None) -> str:
+    """Explicit target, else BTR_DATABASE_URL, else the SQLite snapshot."""
+    return target or os.environ.get("BTR_DATABASE_URL") or DEFAULT_DB
+
+
+def describe_target(target: str) -> str:
+    """Printable form of a database target, with any password masked."""
+    return re.sub(r"(://[^:/@]+:)[^@]+@", r"\1***@", target)
+
+
+def connect(target: str | None = None, rows_by_name: bool = False):
+    """
+    Open the database. `target` is a SQLite path or a postgresql:// URL.
+    PostgreSQL rows are always addressable by index and name; for SQLite pass
+    rows_by_name=True to get sqlite3.Row instead of plain tuples.
+    """
+    target = resolve_target(target)
+    if is_postgres_url(target):
+        from . import pg
+        return pg.connect(target)
+    conn = sqlite3.connect(target)
+    if rows_by_name:
+        conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
-def init_schema(conn: sqlite3.Connection) -> None:
+def is_postgres(conn) -> bool:
+    return getattr(conn, "dialect", "sqlite") == "postgres"
+
+
+def insert_returning_id(conn, sql: str, params) -> int:
+    """Run an INSERT and return the new row's id on either backend."""
+    if is_postgres(conn):
+        return conn.execute(sql.rstrip().rstrip(";") + " RETURNING id",
+                            params).fetchone()[0]
+    return conn.execute(sql, params).lastrowid
+
+
+def init_schema(conn) -> None:
     """
-    Create all tables. If a legacy btr_measures table (pre-documents schema,
-    no document_id column) is found, drop it — its content is fully
-    regenerable from the cached xlsx files via `pipeline.py batch`.
+    Create or migrate all tables, then backfill derived columns.
+
+    SQLite: if a legacy btr_measures table (pre-documents schema, no
+    document_id column) is found, drop it — its content is fully regenerable
+    from the cached xlsx files via `pipeline.py batch`.
     """
+    if is_postgres(conn):
+        from . import pg
+        pg.init_schema(conn, MEASURES_VIEW)
+    else:
+        _init_sqlite(conn)
+    normalise_country_names(conn)
+    backfill_country_codes(conn)
+
+
+def normalise_country_names(conn) -> int:
+    """
+    Rename documents stored under a name that countries.TRACKER_COUNTRY_NAMES
+    now maps to Tracker spelling, so re-ingestion finds the existing row
+    instead of creating a second one. Skipped if the target name exists.
+    """
+    n = 0
+    for doc_id, country, doc_type in conn.execute(
+        "SELECT id, country, doc_type FROM documents"
+    ).fetchall():
+        target = to_tracker_name(country)
+        if target == country:
+            continue
+        clash = conn.execute(
+            "SELECT 1 FROM documents WHERE country = ? AND doc_type = ?",
+            (target, doc_type),
+        ).fetchone()
+        if not clash:
+            conn.execute("UPDATE documents SET country = ? WHERE id = ?",
+                         (target, doc_id))
+            n += 1
+    conn.commit()
+    return n
+
+
+def backfill_country_codes(conn) -> int:
+    """Set documents.country_code (ISO3) wherever it is missing."""
+    rows = conn.execute(
+        "SELECT id, country FROM documents WHERE country_code IS NULL"
+    ).fetchall()
+    n = 0
+    for doc_id, country in rows:
+        code = to_iso3(country)
+        if code:
+            conn.execute("UPDATE documents SET country_code = ? WHERE id = ?",
+                         (code, doc_id))
+            n += 1
+    conn.commit()
+    return n
+
+
+def _init_sqlite(conn: sqlite3.Connection) -> None:
     existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(btr_measures)")]
     if existing_cols and "document_id" not in existing_cols:
         conn.execute("DROP TABLE btr_measures")
@@ -248,6 +350,11 @@ ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("matched_at", "TEXT"),
         ("edited_by", "TEXT"),
         ("edited_at", "TEXT"),
+        ("locked_by", "TEXT"),
+        ("locked_at", "TEXT"),
+    ],
+    "documents": [
+        ("country_code", "TEXT"),
     ],
     "measure_matches": [
         ("selected_classification_id", "INTEGER"),
@@ -335,6 +442,7 @@ def upsert_document(
     a ReviewedDocumentError is raised unless force=True.
     """
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    country_code = to_iso3(country)
     row = conn.execute(
         "SELECT id FROM documents WHERE country = ? AND doc_type = ?",
         (country, doc_type),
@@ -352,22 +460,23 @@ def upsert_document(
                 )
         conn.execute(
             """UPDATE documents SET source_file = ?, file_hash = ?, doc_url = ?,
-               table5_sheet = ?, header_row_index = ?, ghg_unit = ?, ingested_at = ?
+               table5_sheet = ?, header_row_index = ?, ghg_unit = ?, ingested_at = ?,
+               country_code = ?
                WHERE id = ?""",
             (source_file, file_hash, doc_url, table5_sheet,
-             header_row_index, ghg_unit, now, doc_id),
+             header_row_index, ghg_unit, now, country_code, doc_id),
         )
         conn.execute("DELETE FROM btr_measures WHERE document_id = ?", (doc_id,))
     else:
-        cur = conn.execute(
+        doc_id = insert_returning_id(
+            conn,
             """INSERT INTO documents
-               (country, doc_type, source_file, file_hash, doc_url,
+               (country, country_code, doc_type, source_file, file_hash, doc_url,
                 table5_sheet, header_row_index, ghg_unit, ingested_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (country, doc_type, source_file, file_hash, doc_url,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (country, country_code, doc_type, source_file, file_hash, doc_url,
              table5_sheet, header_row_index, ghg_unit, now),
         )
-        doc_id = cur.lastrowid
 
     return doc_id
 
@@ -390,14 +499,17 @@ def get_stats(conn: sqlite3.Connection) -> dict:
     stats["documents"] = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     stats["measures"] = conn.execute("SELECT COUNT(*) FROM btr_measures").fetchone()[0]
     stats["by_relevance"] = conn.execute(
-        "SELECT relevance_source, COUNT(*) FROM btr_measures GROUP BY relevance_source"
+        "SELECT relevance_source, COUNT(*) FROM btr_measures "
+        "GROUP BY relevance_source ORDER BY relevance_source"
     ).fetchall()
     stats["by_review"] = conn.execute(
-        "SELECT review_status, COUNT(*) FROM btr_measures GROUP BY review_status"
+        "SELECT review_status, COUNT(*) FROM btr_measures "
+        "GROUP BY review_status ORDER BY review_status"
     ).fetchall()
     stats["by_status"] = conn.execute(
         "SELECT COALESCE(status_normalized, '(unmapped)'), COUNT(*) "
-        "FROM btr_measures GROUP BY status_normalized ORDER BY COUNT(*) DESC"
+        "FROM btr_measures GROUP BY status_normalized "
+        "ORDER BY COUNT(*) DESC, status_normalized"
     ).fetchall()
     stats["countries"] = conn.execute(
         "SELECT COUNT(DISTINCT country) FROM documents "

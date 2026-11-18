@@ -15,6 +15,10 @@
       of {{ measure["source_file"] }}</span>
   </div>
   <h1 class="measure">{{ measure["measure_name"] }}</h1>
+  {% if locked_by %}
+    <p class="flash warn">{{ locked_by }} currently has this measure open in a
+       review queue. Changes you save here apply immediately.</p>
+  {% endif %}
   {% if measure["edited_by"] %}
     <p class="editedby">Manually edited by {{ measure["edited_by"] }}
        on {{ measure["edited_at"] }}</p>

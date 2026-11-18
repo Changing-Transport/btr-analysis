@@ -1,7 +1,7 @@
 """Routes for the analyst review app."""
 
-from flask import (Blueprint, current_app, flash, g, redirect, render_template,
-                   request, session, url_for)
+from flask import (Blueprint, abort, current_app, flash, g, redirect,
+                   render_template, request, session, url_for)
 
 from . import queries as q
 
@@ -22,8 +22,38 @@ def close_db(exc):
         conn.close()
 
 
+# Header set by Azure Container Apps authentication (Easy Auth) after sign-in.
+# Only trusted when BTR_EASY_AUTH is enabled, i.e. the platform guarantees that
+# every request passed through sign-in and that clients cannot inject it.
+PRINCIPAL_HEADER = "X-MS-CLIENT-PRINCIPAL-NAME"
+
+
+def easy_auth() -> bool:
+    return bool(current_app.config.get("EASY_AUTH"))
+
+
 def analyst() -> str | None:
+    if easy_auth():
+        return request.headers.get(PRINCIPAL_HEADER) or None
     return session.get("analyst")
+
+
+@bp.before_request
+def require_sign_in():
+    if easy_auth() and not analyst() and request.endpoint != "review.health":
+        abort(401, "Sign-in required.")
+
+
+@bp.context_processor
+def inject_auth():
+    return {"easy_auth": easy_auth()}
+
+
+@bp.route("/healthz")
+def health():
+    """Liveness probe for the container platform; also checks the database."""
+    db().execute("SELECT 1").fetchone()
+    return {"status": "ok"}
 
 
 def generate_candidates(measure_id: int, country: str | None) -> None:
@@ -77,13 +107,15 @@ def index():
 @bp.route("/identify", methods=["POST"])
 def identify():
     name = (request.form.get("analyst") or "").strip()
-    if name:
+    if name and not easy_auth():
         session["analyst"] = name
     return redirect(request.form.get("next") or url_for("review.index"))
 
 
 @bp.route("/signout")
 def signout():
+    if easy_auth():
+        return redirect("/.auth/logout")
     session.pop("analyst", None)
     return redirect(url_for("review.index"))
 
@@ -100,7 +132,7 @@ def relevance():
         return render_template("identify.html", stage="relevance",
                                next_url=url_for("review.relevance", country=country))
 
-    measure = q.next_relevance(conn, country)
+    measure = q.next_relevance(conn, analyst(), country)
     return render_template(
         "relevance.html",
         analyst=analyst(),
@@ -116,6 +148,11 @@ def relevance_save(measure_id: int):
     decision = request.form.get("decision")
     country = request.form.get("country") or None
     if decision in ("confirmed", "rejected"):
+        conflict = q.queue_conflict(db(), measure_id, analyst() or "unknown",
+                                    "relevance")
+        if conflict:
+            flash(f"Not saved: {conflict}.", "warn")
+            return redirect(url_for("review.relevance", country=country))
         q.save_relevance(db(), measure_id, decision, analyst() or "unknown",
                          request.form.get("note"))
         if decision == "confirmed":
@@ -135,7 +172,7 @@ def match():
         return render_template("identify.html", stage="match",
                                next_url=url_for("review.match", country=country))
 
-    measure = q.next_match(conn, country)
+    measure = q.next_match(conn, analyst(), country)
     return render_template(
         "match.html",
         analyst=analyst(),
@@ -171,8 +208,13 @@ def match_save(measure_id: int):
         notes[match_id] = request.form.get(f"note-{match_id}")
 
     if decisions:
-        q.save_match(db(), measure_id, analyst() or "unknown",
-                     decisions, choices, notes)
+        conflict = q.queue_conflict(db(), measure_id, analyst() or "unknown",
+                                    "match")
+        if conflict:
+            flash(f"Not saved: {conflict}.", "warn")
+        else:
+            q.save_match(db(), measure_id, analyst() or "unknown",
+                         decisions, choices, notes)
     return redirect(url_for("review.match",
                             country=request.form.get("country") or None))
 
@@ -229,6 +271,7 @@ def measure_detail(measure_id: int):
     return render_template(
         "measure.html",
         analyst=analyst(),
+        locked_by=q.locked_by_other(conn, measure_id, analyst()),
         measure=m,
         candidates=q.candidates(conn, measure_id),
         editable=q.EDITABLE_FIELDS,

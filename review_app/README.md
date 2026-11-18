@@ -9,7 +9,10 @@ the analysis database — the interactive successor to the Excel validation pilo
 python run_review_app.py
 ```
 
-Then open <http://127.0.0.1:5000>. Options: `--db`, `--port`, `--host`, `--debug`.
+Then open <http://127.0.0.1:5000>. Options: `--db` (SQLite path or
+`postgresql://` URL), `--port`, `--host`, `--debug`. The hosted version runs
+the same app under gunicorn (`wsgi.py`, `Dockerfile`); see
+[../deploy/AZURE.md](../deploy/AZURE.md).
 
 **Which database it writes to.** By default the app works on
 `data/btr_analysis.local.db`, a private working copy seeded once from the
@@ -107,9 +110,37 @@ re-attached by `btr_id` + `ndc_id`), but recomputes every candidate list.
 
 ## Identity
 
-The analyst types their name once; it is kept in the session and stored with
-every decision. No password — adequate for a local pilot. For a hosted
-deployment put Entra ID in front of the app and set `FLASK_SECRET_KEY`.
+Locally, the analyst types their name once; it is kept in the session and
+stored with every decision.
+
+Hosted, Azure Container Apps authentication (Entra ID) signs users in before
+any request reaches the app. With `BTR_EASY_AUTH=1` the app takes the analyst
+from the `X-MS-CLIENT-PRINCIPAL-NAME` header the platform sets (usually the
+e-mail address), ignores typed names, answers 401 to requests without it, and
+"sign out" goes to `/.auth/logout`. Only set `BTR_EASY_AUTH=1` when that
+authentication is enabled and required for every request; the header is
+trusted as given. `FLASK_SECRET_KEY` must be set in that mode. `/healthz` stays
+open for the platform's health probes.
+
+## Parallel review
+
+When several analysts work at the same time, the queues hand each of them a
+different measure:
+
+- Showing a measure in stage 1 or 2 locks it (`btr_measures.locked_by` /
+  `locked_at`) for 30 minutes (`LOCK_MINUTES` in `queries.py`). Colleagues'
+  queues skip it. Reloading the page shows the analyst the same measure.
+- Saving the decision releases the lock; taking the next measure releases the
+  previous one; an abandoned lock expires.
+- A decision submitted from a queue is refused, with a message, if a colleague
+  now holds the lock or has already decided the measure (possible only after
+  the submitter's lock expired).
+- *Browse* and the detail page are not locked: edits there apply immediately.
+  The detail page says when a colleague has the measure open in a queue.
+
+The claim is a single conditional UPDATE, so two analysts requesting the same
+measure at the same moment cannot both get it (tested with eight concurrent
+claims on PostgreSQL).
 
 ## Mounting into the climate-policy-miner
 
@@ -119,12 +150,12 @@ Flask app without restructuring:
 ```python
 from review_app import bp as review_bp
 
-app.config["BTR_DB_PATH"] = "/path/to/btr_analysis.db"
+app.config["BTR_DB_PATH"] = "postgresql://..."   # or a SQLite path
 app.register_blueprint(review_bp, url_prefix="/btr-review")
 ```
 
-All SQL lives in `queries.py`, mirroring `btr_pipeline/db.py`, so the move to
-Azure PostgreSQL touches one module per side.
+All SQL lives in `queries.py` and runs on SQLite and PostgreSQL through
+`btr_pipeline.db.connect`.
 
 ## Files
 

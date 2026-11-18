@@ -46,7 +46,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--db", default=WORKING_DB,
-                   help=f"database to use (default {WORKING_DB})")
+                   help=f"SQLite path or postgresql:// URL (default {WORKING_DB})")
     p.add_argument("--port", type=int, default=5000)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--debug", action="store_true")
@@ -63,7 +63,8 @@ def main() -> None:
     conn.close()
 
     app = create_app(args.db)
-    print(f"Review app on http://{args.host}:{args.port}  (db: {args.db})")
+    print(f"Review app on http://{args.host}:{args.port}  "
+          f"(db: {dbmod.describe_target(args.db)})")
     app.run(host=args.host, port=args.port, debug=args.debug)
 
 

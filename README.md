@@ -67,12 +67,18 @@ python pipeline.py export [--out btr_analysis_export.xlsx]
 
 # Database summary
 python pipeline.py stats
+
+# PostgreSQL (hosted database, see deploy/AZURE.md)
+python pipeline.py --db postgresql://... init-db           # create or migrate the schema
+python pipeline.py --db postgresql://... copy-db --from data/btr_analysis.local.db
+python pipeline.py --db postgresql://... create-app-role   # login for the hosted app
 ```
 
-`--db PATH` selects the database for any command and goes before the
-subcommand (`python pipeline.py --db data/btr_analysis.local.db match`). The
-default is the tracked snapshot `data/btr_analysis.db`; point it at the review
-app's working copy when that copy holds newer decisions.
+`--db` selects the database for any command and goes before the subcommand:
+a SQLite path (`python pipeline.py --db data/btr_analysis.local.db match`) or a
+`postgresql://` URL. Without `--db`, `BTR_DATABASE_URL` from the environment or
+`.env` is used, else the tracked snapshot `data/btr_analysis.db`. Every command
+prints the database it works on (password masked).
 
 Both `batch` and `ingest` are idempotent: each document's measures are replaced on re-ingestion, keyed on (country, doc_type). Documents that already carry analyst review decisions are **skipped** rather than overwritten — pass `--force` to replace them deliberately.
 
@@ -127,7 +133,9 @@ Note on scores: cosine scores are compressed into a narrow band (rank-1 scores i
 
 ## Database Schema
 
-SQLite (`btr_analysis.db`), all SQL confined to `btr_pipeline/db.py` with portable column types so migration to Azure PostgreSQL is a single-module port.
+Two backends, one code path: a SQLite file (`data/btr_analysis.db`, local work and the version-controlled snapshot) or PostgreSQL (Azure Database for PostgreSQL, tables in schema `btr`). `btr_pipeline/db.py` holds the SQLite schema and data access, `btr_pipeline/pg.py` the PostgreSQL schema and a thin dialect bridge (placeholders, `GROUP_CONCAT`, `INSERT OR IGNORE`); new SQL should be written so both engines accept it. Both backends were checked to give identical results for `stats`, `match`, `import-ndc`, `ingest`, `export` and the review app.
+
+`documents.country_code` holds the ISO3 code from the Tracker's Country sheet (`btr_pipeline/countries.py`), the key for joining BTR data to the Tracker tables once they share the database. `btr_measures.locked_by` / `locked_at` support parallel review (see the review app README).
 
 ```mermaid
 erDiagram
@@ -142,6 +150,7 @@ erDiagram
     int header_row_index
     string ghg_unit
     string ingested_at
+    string country_code "ISO3, Tracker Country sheet"
   }
 
   btr_measures {
@@ -174,6 +183,8 @@ erDiagram
     string matched_at
     string edited_by
     string edited_at
+    string locked_by
+    string locked_at
   }
 
   ndc_measures {
@@ -252,6 +263,7 @@ Python ≥ 3.10 plus, from [requirements.txt](requirements.txt):
 | `openpyxl` | reading BTR/Tracker workbooks, Excel export |
 | `flask` | the review app |
 | `openai` | `embed` / `match` / `classify` |
+| `psycopg[binary]` | PostgreSQL backend (`--db postgresql://...`) |
 | `playwright`, `requests` | UNFCCC scraping (`brt_transport_analysis.py`) |
 
 ```bash
@@ -275,9 +287,11 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 
 ```
 .
-├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / export / stats
+├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / export / stats / init-db / copy-db / create-app-role
 ├── btr_pipeline/
-│   ├── db.py                     # schema + data access (portable to PostgreSQL)
+│   ├── db.py                     # schema + data access (SQLite or PostgreSQL)
+│   ├── pg.py                     # PostgreSQL connection, dialect bridge, schema
+│   ├── copydb.py                 # SQLite -> PostgreSQL copy with verification
 │   ├── env.py                    # .env loader for Azure OpenAI credentials
 │   ├── extract.py                # Table 5 parsing, relevance screening, normalisation
 │   ├── countries.py              # canonical Tracker country naming
@@ -286,6 +300,9 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 │   └── export.py                 # database -> Excel workbook
 ├── review_app/                   # Analyst review app (Flask; see its README)
 ├── run_review_app.py             # Local entry point for the review app
+├── wsgi.py                       # Hosted entry point (gunicorn wsgi:app)
+├── Dockerfile                    # Review app image (requirements_app.txt)
+├── deploy/AZURE.md               # Step-by-step Azure deployment
 ├── requirements.txt              # Dependencies
 ├── TESTING.md                    # Walk-through for colleagues trying the app
 ├── validation_samples/           # Excel validation pilot (instructions + sample generator)
@@ -351,9 +368,12 @@ earlier decision or correcting extracted fields. See
 python run_review_app.py     # http://127.0.0.1:5000
 ```
 
+Hosted deployment (Azure Container Apps + Azure Database for PostgreSQL, sign-in
+via Entra ID): see [deploy/AZURE.md](deploy/AZURE.md).
+
 ## Next Steps
 
-1. **Azure hosting**: migrate SQLite → Azure PostgreSQL Flexible Server and deploy the review app in the climate-policy-miner's Container Apps environment, with sign-in, so several analysts can review in parallel without overwriting each other.
+1. **Azure hosting**: code ready (PostgreSQL backend, parallel-review locks, sign-in support, container image); deployment per [deploy/AZURE.md](deploy/AZURE.md). Sign-in needs an Entra ID app registration from GIZ IT.
 2. **Match review** of the remaining 1,436 measures in the hosted app.
 3. **Taxonomy classification of BTR-only measures**, reusing the climate-policy-miner's classification logic so categories are NDC-comparable. Matched measures take their classification from the confirmed NDC quote.
 4. **Integration with the climate-policy-miner**: a shared database for NDC and BTR results.

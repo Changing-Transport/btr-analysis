@@ -20,7 +20,7 @@
     <div class="who">
       {% if analyst %}
         <span>{{ analyst }}</span>
-        <a class="muted" href="{{ url_for('review.signout') }}">switch</a>
+        <a class="muted" href="{{ url_for('review.signout') }}">{{ "sign out" if easy_auth else "switch" }}</a>
       {% endif %}
     </div>
   </header>

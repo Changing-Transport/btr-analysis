@@ -11,6 +11,15 @@ Subcommands:
     classify    LLM confirmation of 'pending' content-match measures via
                 Azure OpenAI (requires credentials; see --help).
     stats       Print database summary.
+    init-db     Create or migrate the schema (SQLite or PostgreSQL).
+    copy-db     Copy a SQLite database into PostgreSQL and verify the copy.
+    create-app-role
+                Create the PostgreSQL login the hosted review app uses
+                (row read/write in schema btr, no schema changes).
+
+Database: `--db` takes a SQLite path or a postgresql:// URL and goes before the
+subcommand. Without it, BTR_DATABASE_URL (environment or .env) is used, else
+the tracked snapshot data/btr_analysis.db.
 
 Environment variables for `classify` (same names as the climate-policy-miner app):
     AZURE_OPENAI_ENDPOINT
@@ -26,9 +35,10 @@ import sys
 
 from btr_pipeline import db as dbmod
 from btr_pipeline.countries import to_tracker_name
+from btr_pipeline.env import load_env_file
 from btr_pipeline.extract import extract_measures
 
-DEFAULT_DB = os.path.join("data", "btr_analysis.db")
+DEFAULT_DB = dbmod.DEFAULT_DB
 DEFAULT_CACHE = os.path.join("data", "downloaded_xlsx")
 RESULTS_XLSX = os.path.join("data", "btr_transport_results.xlsx")
 
@@ -44,7 +54,6 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-from btr_pipeline.env import load_env_file  # noqa: E402  (re-exported for the CLI)
 
 
 def country_from_filename(fname: str) -> str:
@@ -362,27 +371,26 @@ def cmd_classify(args) -> None:
 
 
 def cmd_export(args) -> None:
-    if not os.path.exists(args.db):
+    if not dbmod.is_postgres_url(args.db) and not os.path.exists(args.db):
         log(f"Database not found: {args.db}")
         sys.exit(1)
 
     from btr_pipeline.export import export_excel
 
     conn = dbmod.connect(args.db)
-    log(f"Exporting {args.db} -> {args.out}")
+    log(f"Exporting -> {args.out}")
     export_excel(conn, args.out, log=log)
     conn.close()
 
 
 def cmd_stats(args) -> None:
-    if not os.path.exists(args.db):
+    if not dbmod.is_postgres_url(args.db) and not os.path.exists(args.db):
         log(f"Database not found: {args.db}")
         sys.exit(1)
     conn = dbmod.connect(args.db)
     s = dbmod.get_stats(conn)
     conn.close()
 
-    log(f"Database: {args.db}")
     log(f"  documents: {s['documents']}   measures: {s['measures']}   "
         f"countries with measures: {s['countries']}")
     log("  by relevance source:")
@@ -396,13 +404,70 @@ def cmd_stats(args) -> None:
         log(f"    {k:<22s} {v}")
 
 
+def cmd_init_db(args) -> None:
+    conn = dbmod.connect(args.db)
+    dbmod.init_schema(conn)
+    conn.close()
+    log("Schema is up to date.")
+
+
+def cmd_copy_db(args) -> None:
+    from btr_pipeline.copydb import copy_database
+
+    if not dbmod.is_postgres_url(args.db):
+        log("ERROR: copy-db needs a PostgreSQL target: set BTR_DATABASE_URL "
+            "or pass --db postgresql://...")
+        sys.exit(1)
+    if not os.path.exists(args.source):
+        log(f"ERROR: source {args.source} not found")
+        sys.exit(1)
+
+    log(f"Copying {args.source} -> {dbmod.describe_target(args.db)}")
+    src = dbmod.connect(args.source)
+    dst = dbmod.connect(args.db)
+    try:
+        report = copy_database(src, dst, replace=args.replace, log=log)
+    except (RuntimeError, ValueError) as exc:
+        log(f"ERROR: {exc}")
+        sys.exit(1)
+    finally:
+        src.close()
+        dst.close()
+    if not report["ok"]:
+        log("ERROR: verification failed — do not use the target.")
+        sys.exit(1)
+    log("Copy verified: all tables identical.")
+
+
+def cmd_create_app_role(args) -> None:
+    import getpass
+
+    from btr_pipeline import pg
+
+    if not dbmod.is_postgres_url(args.db):
+        log("ERROR: create-app-role needs a PostgreSQL database (--db postgresql://...)")
+        sys.exit(1)
+    password = os.environ.get("BTR_APP_DB_PASSWORD") or getpass.getpass(
+        f"Password for role {args.role}: ")
+    if len(password) < 16:
+        log("ERROR: use a password of at least 16 characters")
+        sys.exit(1)
+    conn = dbmod.connect(args.db)
+    created = pg.create_app_role(conn, args.role, password)
+    conn.close()
+    log(f"Role {args.role} {'created' if created else 'updated'} "
+        f"with read/write access to schema {pg.SCHEMA_NAME}.")
+
+
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--db", default=DEFAULT_DB, help="SQLite database path")
+    parser.add_argument("--db", default=None,
+                        help="SQLite path or postgresql:// URL "
+                             "(default: BTR_DATABASE_URL, else data/btr_analysis.db)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_batch = sub.add_parser("batch", help="Ingest all cached xlsx files")
@@ -449,7 +514,27 @@ def main() -> None:
     p_stats = sub.add_parser("stats", help="Print database summary")
     p_stats.set_defaults(func=cmd_stats)
 
+    p_init = sub.add_parser("init-db", help="Create or migrate the database schema")
+    p_init.set_defaults(func=cmd_init_db)
+
+    p_copy = sub.add_parser("copy-db",
+                            help="Copy a SQLite database into PostgreSQL and verify")
+    p_copy.add_argument("--from", dest="source", default=DEFAULT_DB,
+                        help=f"SQLite source (default {DEFAULT_DB})")
+    p_copy.add_argument("--replace", action="store_true",
+                        help="Overwrite a target that already holds data")
+    p_copy.set_defaults(func=cmd_copy_db)
+
+    p_role = sub.add_parser("create-app-role",
+                            help="Create the database login for the hosted app")
+    p_role.add_argument("--role", default="btr_app", help="Role name (default btr_app)")
+    p_role.set_defaults(func=cmd_create_app_role)
+
+    # .env may carry BTR_DATABASE_URL and the Azure OpenAI credentials
+    load_env_file()
     args = parser.parse_args()
+    args.db = dbmod.resolve_target(args.db)
+    log(f"Database: {dbmod.describe_target(args.db)}")
     args.func(args)
 
 

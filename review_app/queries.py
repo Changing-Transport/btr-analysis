@@ -1,8 +1,8 @@
 """
 All SQL used by the review app.
 
-Kept separate from the views so the storage backend can be swapped (Azure
-PostgreSQL) without touching the UI, mirroring btr_pipeline/db.py.
+Kept separate from the views. Runs on SQLite (local) and PostgreSQL (hosted)
+through btr_pipeline.db.connect; write SQL both engines understand.
 
 Two review stages:
   1. relevance — analysts confirm/reject the `content_match` measures
@@ -10,19 +10,121 @@ Two review stages:
   2. matching  — analysts judge the top-k NDC quote candidates per BTR measure
 """
 
-import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from btr_pipeline import db as dbmod
+
+# A measure shown to an analyst in a review queue is locked for this long, so
+# colleagues working in parallel are served different measures. The lock is
+# released when the decision is saved, when the analyst takes another measure,
+# or when it expires (closed tab, lunch break).
+LOCK_MINUTES = 30
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+def lock_cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=LOCK_MINUTES)
+            ).isoformat(timespec="seconds")
+
+
+def connect(target: str):
+    return dbmod.connect(target, rows_by_name=True)
+
+
+# ---------------------------------------------------------------------------
+# Locks (parallel review)
+# ---------------------------------------------------------------------------
+
+def claim(conn, measure_id: int, analyst: str) -> bool:
+    """
+    Lock a measure for `analyst` unless a colleague holds a live lock on it.
+    An analyst holds at most one lock: claiming releases their previous one.
+    """
+    stamp, cutoff = now(), lock_cutoff()
+    cur = conn.execute(
+        """UPDATE btr_measures SET locked_by = ?, locked_at = ?
+           WHERE id = ?
+             AND (locked_by IS NULL OR locked_by = ? OR locked_at < ?)""",
+        (analyst, stamp, measure_id, analyst, cutoff),
+    )
+    if cur.rowcount != 1:
+        conn.rollback()
+        return False
+    conn.execute(
+        """UPDATE btr_measures SET locked_by = NULL, locked_at = NULL
+           WHERE locked_by = ? AND id <> ?""",
+        (analyst, measure_id),
+    )
+    conn.commit()
+    return True
+
+
+def release(conn, measure_id: int) -> None:
+    conn.execute(
+        "UPDATE btr_measures SET locked_by = NULL, locked_at = NULL WHERE id = ?",
+        (measure_id,),
+    )
+
+
+def locked_by_other(conn, measure_id: int, analyst: str | None) -> str | None:
+    """Name of a colleague holding a live lock on the measure, else None."""
+    row = conn.execute(
+        "SELECT locked_by, locked_at FROM btr_measures WHERE id = ?",
+        (measure_id,),
+    ).fetchone()
+    if row is None or not row[0] or row[0] == analyst:
+        return None
+    return row[0] if row[1] and row[1] >= lock_cutoff() else None
+
+
+def queue_conflict(conn, measure_id: int, analyst: str, stage: str) -> str | None:
+    """
+    Reason a decision submitted from a review queue must not be saved: a
+    colleague now holds the lock, or already decided the measure (possible
+    once the submitter's own lock had expired). None if the save may proceed.
+    """
+    holder = locked_by_other(conn, measure_id, analyst)
+    if holder:
+        return f"{holder} is reviewing this measure right now"
+    if stage == "relevance":
+        row = conn.execute(
+            "SELECT review_status, reviewed_by FROM btr_measures WHERE id = ?",
+            (measure_id,),
+        ).fetchone()
+        if row and row[0] in ("confirmed", "rejected") and row[1] != analyst:
+            return f"{row[1]} already decided this measure"
+    else:
+        row = conn.execute(
+            "SELECT match_outcome, matched_by FROM btr_measures WHERE id = ?",
+            (measure_id,),
+        ).fetchone()
+        if row and row[0] and row[1] != analyst:
+            return f"{row[1]} already decided this measure"
+    return None
+
+
+def _claim_next(conn, where: str, analyst: str, country: str | None):
+    """Lock and return the next free measure matching `where`, or None."""
+    sql = f"""
+        SELECT m.id FROM btr_measures m JOIN documents d ON d.id = m.document_id
+        WHERE {where}
+          AND (m.locked_by IS NULL OR m.locked_by = ? OR m.locked_at < ?)
+    """
+    params: list = [analyst, lock_cutoff()]
+    if country:
+        sql += " AND d.country = ?"
+        params.append(country)
+    # The analyst's own locked measure first, so a page reload shows the same one.
+    sql += (" ORDER BY CASE WHEN m.locked_by = ? THEN 0 ELSE 1 END,"
+            " d.country, m.id LIMIT 20")
+    params.append(analyst)
+    for row in conn.execute(sql, params).fetchall():
+        if claim(conn, row[0], analyst):
+            return measure(conn, row[0])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +160,7 @@ def progress(conn) -> dict:
     }
 
 
-def countries(conn, stage: str) -> list[sqlite3.Row]:
+def countries(conn, stage: str) -> list:
     """Countries with outstanding work in the given stage, with open counts."""
     if stage == "relevance":
         sql = """
@@ -83,18 +185,8 @@ def countries(conn, stage: str) -> list[sqlite3.Row]:
 # Stage 1: relevance screening
 # ---------------------------------------------------------------------------
 
-def next_relevance(conn, country: str | None = None) -> sqlite3.Row | None:
-    sql = """
-        SELECT m.*, d.country, d.source_file, d.doc_url, d.ghg_unit
-        FROM btr_measures m JOIN documents d ON d.id = m.document_id
-        WHERE m.review_status = 'pending'
-    """
-    params: list = []
-    if country:
-        sql += " AND d.country = ?"
-        params.append(country)
-    sql += " ORDER BY d.country, m.id LIMIT 1"
-    return conn.execute(sql, params).fetchone()
+def next_relevance(conn, analyst: str, country: str | None = None):
+    return _claim_next(conn, "m.review_status = 'pending'", analyst, country)
 
 
 def save_relevance(conn, measure_id: int, decision: str, analyst: str,
@@ -106,6 +198,7 @@ def save_relevance(conn, measure_id: int, decision: str, analyst: str,
            WHERE id = ?""",
         (decision, analyst, now(), note or None, measure_id),
     )
+    release(conn, measure_id)
     conn.commit()
 
 
@@ -113,22 +206,16 @@ def save_relevance(conn, measure_id: int, decision: str, analyst: str,
 # Stage 2: match validation
 # ---------------------------------------------------------------------------
 
-def next_match(conn, country: str | None = None) -> sqlite3.Row | None:
-    sql = """
-        SELECT m.*, d.country, d.source_file, d.doc_url, d.ghg_unit
-        FROM btr_measures m JOIN documents d ON d.id = m.document_id
-        WHERE m.match_outcome IS NULL
-          AND EXISTS (SELECT 1 FROM measure_matches mm WHERE mm.btr_id = m.id)
-    """
-    params: list = []
-    if country:
-        sql += " AND d.country = ?"
-        params.append(country)
-    sql += " ORDER BY d.country, m.id LIMIT 1"
-    return conn.execute(sql, params).fetchone()
+def next_match(conn, analyst: str, country: str | None = None):
+    return _claim_next(
+        conn,
+        "m.match_outcome IS NULL AND EXISTS "
+        "(SELECT 1 FROM measure_matches mm WHERE mm.btr_id = m.id)",
+        analyst, country,
+    )
 
 
-def measure(conn, measure_id: int) -> sqlite3.Row | None:
+def measure(conn, measure_id: int):
     return conn.execute(
         """SELECT m.*, d.country, d.source_file, d.doc_url, d.ghg_unit
            FROM btr_measures m JOIN documents d ON d.id = m.document_id
@@ -202,6 +289,7 @@ def save_match(conn, measure_id: int, analyst: str,
            WHERE id = ?""",
         (outcome, analyst, stamp, measure_id),
     )
+    release(conn, measure_id)
     conn.commit()
     return outcome
 
@@ -285,15 +373,16 @@ def _browse_where(country: str | None, state: str | None,
         clauses.append("m.edited_by IS NOT NULL")
 
     if search:
-        clauses.append("(m.measure_name LIKE ? OR m.description LIKE ?)")
-        like = f"%{search}%"
+        # LOWER on both sides: SQLite's LIKE ignores ASCII case, PostgreSQL's does not.
+        clauses.append("(LOWER(m.measure_name) LIKE ? OR LOWER(m.description) LIKE ?)")
+        like = f"%{search.lower()}%"
         params += [like, like]
 
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
 def browse(conn, country=None, state=None, search=None,
-           limit: int = 50, offset: int = 0) -> tuple[list[sqlite3.Row], int]:
+           limit: int = 50, offset: int = 0) -> tuple[list, int]:
     where, params = _browse_where(country, state, search)
     total = conn.execute(
         "SELECT COUNT(*) FROM btr_measures m JOIN documents d "
@@ -360,7 +449,7 @@ def reset_relevance(conn, measure_id: int) -> None:
     conn.commit()
 
 
-def recent_decisions(conn, limit: int = 15) -> list[sqlite3.Row]:
+def recent_decisions(conn, limit: int = 15) -> list:
     """Most recently reviewed measures, for the landing page / undo."""
     return conn.execute(
         """SELECT m.id, m.measure_name, m.match_outcome, m.matched_by, m.matched_at,

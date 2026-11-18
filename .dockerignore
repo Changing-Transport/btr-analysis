@@ -1,0 +1,15 @@
+.git/
+.github/
+.claude/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+data/
+validation_samples/
+*.xlsx
+*.db
+*.db-wal
+*.db-shm
