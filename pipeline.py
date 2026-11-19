@@ -16,6 +16,10 @@ Subcommands:
     create-app-role
                 Create the PostgreSQL login the hosted review app uses
                 (row read/write in schema btr, no schema changes).
+    export-decisions
+                Save one reviewer's decisions to a file in decisions/.
+    import-decisions
+                Merge decision files into a database (see SHARING_DECISIONS.md).
 
 Database: `--db` takes a SQLite path or a postgresql:// URL and goes before the
 subcommand. Without it, BTR_DATABASE_URL (environment or .env) is used, else
@@ -39,6 +43,8 @@ from btr_pipeline.env import load_env_file
 from btr_pipeline.extract import extract_measures
 
 DEFAULT_DB = dbmod.DEFAULT_DB
+WORKING_DB = os.path.join("data", "btr_analysis.local.db")
+DECISIONS_DIR = "decisions"
 DEFAULT_CACHE = os.path.join("data", "downloaded_xlsx")
 RESULTS_XLSX = os.path.join("data", "btr_transport_results.xlsx")
 
@@ -459,6 +465,106 @@ def cmd_create_app_role(args) -> None:
         f"with read/write access to schema {pg.SCHEMA_NAME}.")
 
 
+def cmd_export_decisions(args) -> None:
+    import json
+
+    from btr_pipeline.decisions import export_decisions
+
+    conn = dbmod.connect(args.db, rows_by_name=True)
+    dbmod.init_schema(conn)
+    data = export_decisions(conn, reviewer=args.by)
+    conn.close()
+
+    n = data["counts"]
+    if not any(n.values()):
+        log(f"No decisions by '{args.by}' in this database. Check the spelling: "
+            f"it must be the name exactly as typed in the review app.")
+        sys.exit(1)
+
+    out = args.out
+    if not out:
+        os.makedirs(DECISIONS_DIR, exist_ok=True)
+        safe = "".join(ch if ch.isalnum() else "-" for ch in args.by).strip("-")
+        # One file per reviewer, overwritten on each export: it always holds
+        # all of that reviewer's decisions, and git keeps the history.
+        out = os.path.join(DECISIONS_DIR, f"{safe}.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+
+    log(f"Saved {out}")
+    log(f"  relevance decisions: {n['relevance']}")
+    log(f"  match reviews:       {n['matches']}")
+    log(f"  field corrections:   {n['edits']}")
+    log("Next: share this file (see SHARING_DECISIONS.md).")
+
+
+def cmd_import_decisions(args) -> None:
+    import glob
+    import json
+
+    from btr_pipeline.decisions import import_decisions
+
+    files: list[str] = []
+    for path in args.files or [DECISIONS_DIR]:
+        if os.path.isdir(path):
+            files += sorted(glob.glob(os.path.join(path, "*.json")))
+        elif os.path.exists(path):
+            files.append(path)
+        else:
+            log(f"Not found: {path}")
+    if not files:
+        log("No decision files to import.")
+        sys.exit(1)
+
+    conn = dbmod.connect(args.db, rows_by_name=True)
+    dbmod.init_schema(conn)
+
+    labels = {"applied": "added or updated", "unchanged": "already there",
+              "outdated": "older than what is there (skipped)",
+              "conflict": "CONFLICT (kept existing)", "not_found": "could not be placed"}
+    conflicts, problems, need = [], [], []
+    total_applied = 0
+    for path in files:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        try:
+            report = import_decisions(conn, data, dry_run=args.preview)
+        except ValueError as exc:
+            log(f"{path}: skipped, {exc}")
+            continue
+        total_applied += report.applied
+        log(f"{os.path.basename(path)}")
+        for kind, title in (("relevance", "relevance decisions"),
+                            ("matches", "match reviews"),
+                            ("edits", "field corrections")):
+            parts = [f"{v} {labels[k]}" for k, v in report.counts[kind].items() if v]
+            if parts:
+                log(f"  {title}: " + ", ".join(parts))
+        conflicts += report.conflicts
+        problems += report.problems
+        need += report.need_candidates
+    conn.close()
+
+    if conflicts:
+        log(f"\n{len(conflicts)} conflict(s): two reviewers decided differently. "
+            f"The decision already in the database was kept. Please agree on these "
+            f"and correct them in the app (Browse):")
+        for c in conflicts:
+            log(f"  - {c}")
+    if problems:
+        log(f"\n{len(problems)} item(s) could not be applied:")
+        for p_ in problems:
+            log(f"  - {p_}")
+    if need:
+        log(f"\n{len(need)} measure(s) are now marked transport-relevant but have no "
+            f"NDC candidates in this copy yet. Someone with Azure OpenAI access runs: "
+            f"python pipeline.py --db <database> match --missing-only")
+    if args.preview:
+        log("\nPreview only: nothing was changed.")
+    else:
+        log(f"\nDone: {total_applied} decision(s) added or updated.")
+
+
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -530,9 +636,30 @@ def main() -> None:
     p_role.add_argument("--role", default="btr_app", help="Role name (default btr_app)")
     p_role.set_defaults(func=cmd_create_app_role)
 
+    p_exp = sub.add_parser("export-decisions",
+                           help="Save one reviewer's decisions to a file")
+    p_exp.add_argument("--by", required=True,
+                       help="Reviewer name exactly as typed in the review app")
+    p_exp.add_argument("--out", help="File to write (default decisions/<name>.json)")
+    p_exp.set_defaults(func=cmd_export_decisions)
+
+    p_imp = sub.add_parser("import-decisions",
+                           help="Merge decision files into a database")
+    p_imp.add_argument("files", nargs="*",
+                       help=f"Decision files or folders (default: {DECISIONS_DIR}/)")
+    p_imp.add_argument("--preview", action="store_true",
+                       help="Show what would change without changing anything")
+    p_imp.set_defaults(func=cmd_import_decisions)
+
     # .env may carry BTR_DATABASE_URL and the Azure OpenAI credentials
     load_env_file()
     args = parser.parse_args()
+    # Sharing decisions is about each reviewer's own working copy: use it
+    # unless a database was named explicitly.
+    if (args.db is None and not os.environ.get("BTR_DATABASE_URL")
+            and args.func in (cmd_export_decisions, cmd_import_decisions)
+            and os.path.exists(WORKING_DB)):
+        args.db = WORKING_DB
     args.db = dbmod.resolve_target(args.db)
     log(f"Database: {dbmod.describe_target(args.db)}")
     args.func(args)

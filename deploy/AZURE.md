@@ -81,7 +81,14 @@ pip install -r requirements.txt
 ```
 
 Stop the local review app if it is running: the copy reads your working copy
-`data/btr_analysis.local.db`, which holds the newest decisions.
+`data/btr_analysis.local.db`. Bring in everyone's latest decisions first, so
+the online database starts complete:
+
+```powershell
+python pipeline.py import-decisions
+```
+
+Resolve any conflicts it reports before copying (see `SHARING_DECISIONS.md`).
 
 ## 3. Copy the data and create the app login
 

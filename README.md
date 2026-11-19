@@ -32,8 +32,8 @@ See [review_app/README.md](review_app/README.md) for what each stage does, and
 > and writes decisions there. The working copy is git-ignored, so pulling or
 > switching branches cannot overwrite review work — but it also means decisions
 > stay on one machine. Until the hosted deployment is available (see
-> *Next Steps*), review work is pooled by promoting the working copy to the
-> snapshot and pushing it (see *Sharing & syncing review decisions via Git*). Use `--db data/btr_analysis.db` to work on the tracked snapshot
+> *Next Steps*), reviewers share their work through decision files; see
+> [SHARING_DECISIONS.md](SHARING_DECISIONS.md). Use `--db data/btr_analysis.db` to work on the tracked snapshot
 > deliberately, e.g. to commit a round of review.
 
 ## Background
@@ -72,6 +72,10 @@ python pipeline.py stats
 python pipeline.py --db postgresql://... init-db           # create or migrate the schema
 python pipeline.py --db postgresql://... copy-db --from data/btr_analysis.local.db
 python pipeline.py --db postgresql://... create-app-role   # login for the hosted app
+
+# Sharing review decisions between local copies (see SHARING_DECISIONS.md)
+python pipeline.py export-decisions --by AC     # -> decisions/AC.json
+python pipeline.py import-decisions             # merge all files in decisions/
 ```
 
 `--db` selects the database for any command and goes before the subcommand:
@@ -287,11 +291,12 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 
 ```
 .
-├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / export / stats / init-db / copy-db / create-app-role
+├── pipeline.py                   # CLI: batch / ingest / import-ndc / embed / match / classify / export / stats / init-db / copy-db / create-app-role / export-decisions / import-decisions
 ├── btr_pipeline/
 │   ├── db.py                     # schema + data access (SQLite or PostgreSQL)
 │   ├── pg.py                     # PostgreSQL connection, dialect bridge, schema
 │   ├── copydb.py                 # SQLite -> PostgreSQL copy with verification
+│   ├── decisions.py              # export/merge review decisions between copies
 │   ├── env.py                    # .env loader for Azure OpenAI credentials
 │   ├── extract.py                # Table 5 parsing, relevance screening, normalisation
 │   ├── countries.py              # canonical Tracker country naming
@@ -305,6 +310,8 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 ├── deploy/AZURE.md               # Step-by-step Azure deployment
 ├── requirements.txt              # Dependencies
 ├── TESTING.md                    # Walk-through for colleagues trying the app
+├── SHARING_DECISIONS.md          # How reviewers combine their work (until hosting)
+├── decisions/                    # One decision file per reviewer
 ├── validation_samples/           # Excel validation pilot (instructions + sample generator)
 ├── brt_transport_analysis.py     # Scrapes UNFCCC and downloads BTR Excel files
 ├── data/
@@ -318,29 +325,18 @@ AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME   # embed
 └── README.md
 ```
 
-### Sharing & syncing review decisions via Git
+### Sharing review decisions
 
-Because `data/btr_analysis.local.db` is git-ignored, your review decisions stay local until you promote them to the tracked snapshot (`data/btr_analysis.db`) and push them to GitHub:
+Until the hosted app is available, reviewers work in their own local copy and
+exchange **decision files** (`decisions/<name>.json`), never database files:
+`export-decisions --by <name>` saves one reviewer's decisions, and
+`import-decisions` merges everyone's files into a copy, reporting conflicts
+instead of overwriting. The step-by-step guide for reviewers is
+[SHARING_DECISIONS.md](SHARING_DECISIONS.md); the merge rules are documented in
+`btr_pipeline/decisions.py`.
 
-1. **Stop the review app** (`Ctrl+C` in the terminal) and close any open database viewers so SQLite flushes pending `.db-wal` / `.db-shm` changes into the main file.
-2. **Overwrite the tracked snapshot** with your updated working copy:
-   ```bash
-   # macOS / Linux / Git Bash
-   cp data/btr_analysis.local.db data/btr_analysis.db
-
-   # Windows (PowerShell / CMD)
-   copy data\btr_analysis.local.db data\btr_analysis.db
-   ```
-3. **Commit and push** the updated snapshot:
-   ```bash
-   git pull
-   git add data/btr_analysis.db
-   git commit -m "Update btr_analysis.db snapshot with latest review decisions"
-   git push
-   ```
-
-**Pulling a colleague's updates:** After running `git pull`, your existing `data/btr_analysis.local.db` will **not** be overwritten automatically. To load the newly pulled snapshot, delete (or back up) your local `data/btr_analysis.local.db` and restart `python run_review_app.py` to generate a fresh working copy.
-
+Do not copy `data/btr_analysis.local.db` over `data/btr_analysis.db` any more:
+that overwrites other reviewers' work.
 
 ## Current State (2026-11-17)
 
